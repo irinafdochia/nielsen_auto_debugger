@@ -1,0 +1,30 @@
+# ============================================================
+# Configurazione Auto Debug Nielsen
+# ============================================================
+
+# Cartella root con gli Excel Audicom (es. untracked/06_2026_GEDI-MANZONI)
+segnalazioni_path: untracked/06_2026_GEDI-MANZONI
+
+# Dove salvare il report Excel generato
+output_path: untracked/output
+
+# Quante pagine aprire in parallelo con Playwright
+# Aumentare se la macchina regge, diminuire se si vedono errori
+playwright_concurrency: 3
+
+# Secondi di attesa massima per ogni pagina (incluso caricamento Nielsen)
+playwright_timeout: 30
+
+# ============================================================
+# Mail
+# ============================================================
+mail:
+  mittente: nielsen-autodebug@gedidigital.it
+  destinatari:
+    - irina.f.dochia@accenture.com
+    # - altro@esempio.it
+  oggetto: "Auto Debug Nielsen - Segnalazioni Audicom {mese}"
+  smtp_host: smtp.office365.com
+  smtp_port: 587
+  smtp_user: nielsen-autodebug@gedidigital.it
+  smtp_password: ""   # oppure usa variabile d'ambiente SMTP_PASSWORD

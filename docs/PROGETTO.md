@@ -68,16 +68,18 @@ La cartella root arriva da Audicom con questa struttura (esempio reale: `06_2026
 #### Siti interni GEDI
 
 **Step A - Verifica configurazione TLH:**
-- Caricare i file di configurazione TLH (da repo `Tlh/app/configurations/`)
-- Fare matching dell'URL con le regex presenti nelle configurazioni
+- Scaricare il TLH di produzione da `https://tlh.gedidigital.it/tlh/js/adsetup_tlh.js` (cachato 12h)
+- Fare matching dell'URL con le regex presenti nelle configurazioni TLH
 - Determinare se esiste una configurazione Nielsen per quell'URL (campo `nielsenStatic` nel config object)
 - Risultato: `config presente` / `config assente` / `config con nielsenStatic vuoto`
 
-**Step B - Verifica con Playwright (se config presente):**
-- Aprire la pagina con Playwright
-- Verificare la presenza dell'SDK Nielsen in pagina (ricerca di `NOLBUNDLE` o script da `cdn-gl.imrworldwide.com`)
-- Verificare l'uscita del ping Nielsen (network request verso `*.imrworldwide.com`)
-- **Nota**: il ping può essere rilevato anche senza consensare la CMP
+**Step B - Verifica con Playwright:**
+- Se `matched=False` senza errori TLH → skip: Nielsen certamente assente su quel dominio
+- Se `matched=True` (con o senza `nielsenStatic`) → aprire la pagina con Playwright
+- Verificare la presenza dell'SDK Nielsen in pagina (request verso `cdn-gl.imrworldwide.com/conf/`)
+- Verificare l'uscita del ping Nielsen (request verso `imrworldwide.com/cgi-bin/gn`)
+- **Nota**: SDK assente implica ping assente — il ping richiede che l'SDK sia caricato e inizializzato
+- **Nota**: il ping può essere rilevato anche senza consensare la CMP (session ping)
 - **Futuro**: valutare la possibilità di consensare la CMP per verifica completa
 
 #### Editori terzi Manzoni
