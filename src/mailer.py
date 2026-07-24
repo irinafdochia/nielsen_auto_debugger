@@ -11,14 +11,16 @@ from email.message import EmailMessage
 from datetime import datetime
 
 
-def invia_report(filepath, testo_corpo, config):
+def invia_report(filepaths, testo_corpo, config):
     """
-    Invia il file Excel come allegato.
+    Invia i file Excel come allegati.
 
-    - filepath    : path del file Excel generato
+    - filepaths   : path o lista di path dei file Excel generati
     - testo_corpo : testo della mail (numeriche aggregate)
     - config      : dict con le chiavi mail di config.yaml
     """
+    if isinstance(filepaths, str):
+        filepaths = [filepaths]
     mail_cfg = config.get('mail', {})
 
     mittente     = mail_cfg.get('mittente', '')
@@ -47,14 +49,15 @@ def invia_report(filepath, testo_corpo, config):
     msg['Subject'] = oggetto
     msg.set_content(testo_corpo)
 
-    # Allegato Excel
-    with open(filepath, 'rb') as f:
-        msg.add_attachment(
-            f.read(),
-            maintype='application',
-            subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            filename=os.path.basename(filepath),
-        )
+    # Allegati Excel
+    for filepath in filepaths:
+        with open(filepath, 'rb') as f:
+            msg.add_attachment(
+                f.read(),
+                maintype='application',
+                subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                filename=os.path.basename(filepath),
+            )
 
     try:
         with smtplib.SMTP(smtp_host, smtp_port) as smtp:

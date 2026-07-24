@@ -99,10 +99,19 @@ Coordina l'intera esecuzione in quattro step sequenziali.
 
 ```
 [1/4] Parsing Excel       → chiama excel_parser.find_segnalazioni()
+                            filtra out tutte le segnalazioni con tipo "mobile"
 [2/4] TLH matching        → chiama tlh_matcher.check_urls_batch()  (solo URL GEDI)
-[3/4] Playwright check    → chiama playwright_checker.check_urls_batch()  (tutte le URL)
-[4/4] Report + mail       → chiama report_builder.build_report() e mailer.invia_report()
+[3/4] Playwright check    → chiama playwright_checker.check_urls_batch()
+                            esclude le URL che matchano skip_url_patterns (config.yaml)
+                            per le URL skippate pre-compila playwright_results con skipped_reason
+[4/4] Report + mail       → chiama report_builder.build_reports() → (gedi_path, manzoni_path)
+                            chiama mailer.invia_report([gedi_path, manzoni_path], ...)
 ```
+
+**Filtri applicati prima di Playwright:**
+- `semi_statico_mobile`: escluse dalla lista segnalazioni (impossibile simulare app native)
+- URL che matchano `skip_url_patterns` (`/api/`, `/login`, `/account/`, ecc.):
+  non vengono passate a Playwright; nel report appaiono con nota esplicativa
 
 Gestisce anche la modalità `--url` per testare una singola URL in debug.
 
@@ -246,79 +255,106 @@ gli passa le URL via stdin, e converte il JSON di output nel formato Python.
 
 ### `src/playwright_checker.py` — verifica Nielsen in-browser
 
-**Input:** lista di URL (GEDI + terzi Manzoni)
+**Input:** lista di URL (GEDI + terzi Manzoni, escluse quelle pre-filtrate in `main.py`)
 **Output:** dict `{ url: result }` dove `result` ha questa forma:
 ```python
 {
-    'sdk_loaded': True,
-    'ping_sent':  True,
-    'sdk_url':    'https://cdn-gl.imrworldwide.com/conf/P78FA9AF2-....js',
-    'ping_url':   'https://secure-it.imrworldwide.com/cgi-bin/gn?prd=session&...',
-    'error':      None,
+    'tlh_loaded':  True,
+    'tlh_url':     'https://tlh.gedidigital.it/tlh/js/adsetup.js',
+    'sdk_loaded':  True,
+    'sdk_url':     'https://cdn-gl.imrworldwide.com/conf/P78FA9AF2-....js',
+    'ping_sent':   True,
+    'ping_url':    'https://secure-it.imrworldwide.com/cgi-bin/gn?prd=session&...',
+    'error':       None,
+    'final_url':   None,        # valorizzato se c'è stato un redirect
+    'http_status': None,        # valorizzato se status >= 400
+    'http_to_https': False,     # True se URL http:// redirige su https://
 }
 ```
 
-**Come funziona:** apre ogni URL con Chromium in modalità headless, intercetta tutte
-le request di rete, e cerca:
-- SDK Nielsen: request che contiene `imrworldwide.com/conf/`
-- Ping Nielsen: request che contiene `imrworldwide.com/cgi-bin/gn`
+**Come funziona:**
 
-Dopo il caricamento della pagina usa un listener a eventi invece di un'attesa fissa:
-aspetta al massimo 5s che arrivi la request SDK; se non arriva esce subito (il ping
-non può arrivare senza SDK); se l'SDK arriva, aspetta altri 5s per il ping.
+1. **TLH in pagina (DOM inspection):** dopo il caricamento (`domcontentloaded`)
+   esegue via `page.evaluate()` uno script JS che cerca nei tag `<head><script>`
+   sette filename specifici del TLH GEDI: `adsetup.js`, `adsetup_cmp.js`,
+   `adsetup_pcmp.js`, `adsetup_pcmp_video.js`, `adsetup_webview.js`, `tlh.js`,
+   `tlh_webview.js`. Questa tecnica funziona anche se lo script è cachato
+   (la network interception non intercetterebbe uno script già in cache).
+
+2. **SDK Nielsen:** intercetta network request a `imrworldwide.com/conf/`
+3. **Ping Nielsen:** intercetta network request a `imrworldwide.com/cgi-bin/gn`
+
+**Wait logic:** usa `asyncio.Event` invece di attesa fissa.
+Aspetta al massimo 5s l'SDK; se l'SDK arriva, aspetta altri 5s per il ping.
+Se l'SDK non arriva, il ping è impossibile (logica a cascata) — esce subito.
+
+**HTTP → HTTPS:** se l'URL originale è `http://` e il browser finisce su `https://`,
+il risultato contiene `http_to_https=True` e l'analisi TLH/SDK/ping viene saltata.
+Queste URL non sono gestibili lato TLH (redirect lato server — da escludere
+dalle segnalazioni Audicom).
 
 **Il check avviene senza consensare la CMP.** Nielsen emette comunque un "session ping"
-anche senza consenso, ma potrebbe non emettere tutti i ping "full". Questa è la
-modalità scelta per semplicità e coerenza con le segnalazioni Audicom.
+anche senza consenso. Questa è la modalità scelta per coerenza con le segnalazioni Audicom.
 
-**Playwright gira su tutte le URL senza eccezioni.** Il TLH matching opera su URL
-esatte, ma il browser segue redirect e normalizza schemi HTTP/HTTPS — i due non sono
-equivalenti. Skippare in base al risultato TLH rischierebbe falsi negativi (es. una URL
-senza `www` non matchata dal TLH potrebbe redirigere a una pagina con Nielsen attivo).
+**Playwright gira su tutte le URL non pre-filtrate** (GEDI + Manzoni). Il TLH matching
+opera su URL esatte, ma il browser segue redirect — skippare in base al TLH rischierebbe
+falsi negativi.
 
-**Concorrenza:** usa `asyncio.Semaphore` per aprire al massimo N pagine in parallelo
-(configurabile con `playwright_concurrency` in `config.yaml`).
-
-**User agent:** simula Chrome su macOS per evitare blocchi bot.
+**Concorrenza:** `asyncio.Semaphore`, limite configurabile con `playwright_concurrency`.
+**User agent:** Chrome su macOS per evitare blocchi bot.
 
 ---
 
 ### `src/report_builder.py` — generazione report Excel
 
 **Input:** segnalazioni + risultati TLH + risultati Playwright
-**Output:** file `nielsen_autodebug_YYYYMMDD_HHMM.xlsx` in `output_path`
+**Output:** due file Excel separati in `output_path`
 
-Il report ha più sheet:
+#### `nielsen_gedi_YYYYMMDD_HHMM.xlsx` — siti interni GEDI
 
-**Sheet "Riepilogo"** (sempre il primo):
-- Totale URL analizzate, suddivise GEDI / terzi
-- Statistiche TLH (quante con config trovata, quante con Nielsen attivo)
-- Statistiche Playwright (SDK ok/ko, ping ok/ko)
-- Tabella segnalazioni per testata
-
-**Sheet per ogni codice errore** (es. `"Errore 21 - Zero page views"`):
-Una riga per URL unica, con queste colonne:
+Contiene la verifica completa: TLH in pagina (Playwright), config TLH (matching),
+mapping Nielsen (TLH), SDK e ping (Playwright).
 
 | Colonna | Cosa mostra |
 |---|---|
 | URL | L'URL segnalata |
-| Sito | `Interno GEDI` o `Terzo Manzoni` |
-| SDK in pagina | Sì/No/N/A — verde/rosso/bianco |
-| Ping inviato | Sì/No/N/A — verde/rosso/bianco |
-| Config TLH trovata | Sì/No (solo GEDI) — verde/rosso |
-| Brand TLH | es. `repubblica` |
-| Config Nielsen | Sì/No — verde/giallo se TLH trovato senza Nielsen |
-| Nielsen Static URL | URL del file JS di mapping Nielsen |
-| Gruppo | GEDI o nome editore terzo |
 | Testata | Testata(e) che ha segnalato quell'URL |
-| Tipo accesso | `semi_statico_desktop` / `semi_statico_mobile` |
-| Note | Eventuali errori TLH o Playwright |
-| Soluzione | Azione correttiva suggerita (es. "Inserire config TLH") — giallo |
+| TLH in pagina | Sì/No — verde/rosso; N/A se URL skippata |
+| Config TLH trovata | Sì/No dal TLH matching — verde/rosso |
+| Mapping Nielsen | Sì/No — verde/giallo (config trovata ma senza `nielsenStatic`) |
+| Soluzione | Azione correttiva suggerita — giallo |
+| SDK in pagina | Sì/No — verde/rosso; N/A se URL skippata |
+| Ping inviato | Sì/No — verde/rosso; N/A se URL skippata |
+| Nielsen Static URL | URL del file JS di mapping Nielsen |
+| Note | Motivo skip, redirect HTTP→HTTPS, errori Playwright, HTTP status |
+| Tipo accesso | `semi_statico_desktop` |
 
-`N/A` nelle colonne SDK/Ping indica che il check Playwright è stato saltato perché
-TLH ha confermato che Nielsen non è presente su quel dominio.
+**Logica Soluzione:**
+- `TLH in pagina = No` → "Inserire TLH in pagina"
+- `TLH in pagina = Sì, Config TLH trovata = No` → "Aggiungere config TLH"
+- `Config TLH trovata = Sì, Mapping Nielsen = No` → "Aggiungere mapping Nielsen"
+
+**URL skippate** (pattern da `config.yaml → skip_url_patterns`, es. `/api/`, `/login`):
+le celle Playwright mostrano "N/A" con sfondo bianco; la nota spiega perché.
+URL `http://` che redirigono su `https://`: stesso trattamento — da escludere
+dalle segnalazioni Audicom in quanto non gestibili lato TLH.
+
+#### `nielsen_manzoni_YYYYMMDD_HHMM.xlsx` — editori terzi Manzoni
+
+Verifica la presenza dell'SDK e del ping Nielsen in pagina.
+
+| Colonna | Cosa mostra |
+|---|---|
+| URL | L'URL segnalata |
+| Gruppo | Nome editore terzo |
+| Testata | Testata(e) che ha segnalato quell'URL |
+| Tipo accesso | `semi_statico_desktop` |
+| SDK in pagina | Sì/No — verde/rosso; N/A se URL skippata |
+| Ping inviato | Sì/No — verde/rosso; N/A se URL skippata |
+| Note | Motivo skip, redirect HTTP→HTTPS, errori Playwright, HTTP status |
 
 Stessa URL segnalata da più testate → **una sola riga** con le testate concatenate.
+URL `semi_statico_mobile` escluse a monte: Playwright non può simulare app native.
 
 ---
 

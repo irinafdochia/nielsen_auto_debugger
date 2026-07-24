@@ -10,10 +10,19 @@ output_path: untracked/output
 
 # Quante pagine aprire in parallelo con Playwright
 # Aumentare se la macchina regge, diminuire se si vedono errori
-playwright_concurrency: 3
+playwright_concurrency: 6
 
 # Secondi di attesa massima per ogni pagina (incluso caricamento Nielsen)
 playwright_timeout: 30
+
+# Pattern URL da escludere dall'analisi (login, API, funnel, ecc.)
+# Queste URL appaiono nel report con una nota ma non vengono analizzate con Playwright.
+skip_url_patterns:
+  - /api/
+  - /login
+  - /account/
+  - /checkout
+  - /registr
 
 # ============================================================
 # Mail

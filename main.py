@@ -13,7 +13,6 @@ import os
 import asyncio
 import argparse
 import yaml
-from urllib.parse import urlparse
 
 # Aggiunge src/ al path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
@@ -53,12 +52,40 @@ def run(args, config):
         print("Nessuna segnalazione trovata. Controlla il path in config.yaml.")
         return
 
+    # Escludi URL mobile: il check browser non è applicabile (impossibile simulare app native)
+    n_before = len(segnalazioni)
+    segnalazioni = [s for s in segnalazioni if 'mobile' not in s['tipo']]
+    n_skipped_mobile = n_before - len(segnalazioni)
+    if n_skipped_mobile:
+        print(f"  Escluse {n_skipped_mobile} segnalazioni mobile (solo desktop supportato)")
+
+    if not segnalazioni:
+        print("Nessuna segnalazione desktop trovata.")
+        return
+
     by_url = excel_parser.get_unique_urls(segnalazioni)
     all_unique_urls  = list(by_url.keys())
     gedi_unique_urls = [u for u in all_unique_urls if any(s['is_gedi'] for s in by_url[u])]
 
+    # Pattern URL non tracciabili (login, API, funnel, ecc.)
+    # Appaiono nel report con nota ma non vengono analizzate con Playwright
+    skip_patterns = config.get('skip_url_patterns', [
+        '/api/', '/login', '/account/', '/checkout', '/registr',
+        '/codici-sconto', '/abbonamento/', '/feed/',
+    ])
+
+    def _skip_reason(url):
+        for p in skip_patterns:
+            if p in url:
+                return f"URL non tracciabile ({p.strip('/')}): escludere dal mapping TLH"
+        return None
+
+    url_skip_reasons = {u: _skip_reason(u) for u in all_unique_urls if _skip_reason(u)}
+    if url_skip_reasons:
+        print(f"  {len(url_skip_reasons)} URL escluse dall'analisi (login/api/funnel)")
+
     # ----------------------------------------------------------------
-    # 2. TLH matching (solo URL GEDI)
+    # 2. TLH matching (solo URL GEDI, incluse quelle strane — utile sapere se sono nel mapping)
     # ----------------------------------------------------------------
     print(f"\n[2/4] TLH matching per {len(gedi_unique_urls)} URL GEDI...")
     if gedi_unique_urls:
@@ -68,79 +95,40 @@ def run(args, config):
         print("  (nessuna URL GEDI)")
 
     # ----------------------------------------------------------------
-    # 3. Playwright check
+    # 3. Playwright check (tutte le URL tranne quelle pre-filtrate)
     # ----------------------------------------------------------------
-
-    # Phase 3a: homepage probe per ogni dominio GEDI unico.
-    # Se l'homepage non mostra SDK (senza errori ne redirect), tutte le URL
-    # anomale di quel dominio ereditano sdk=No, ping=No senza aprire il browser.
-    gedi_domain_homepage = {}
-    for u in gedi_unique_urls:
-        p = urlparse(u)
-        if p.netloc not in gedi_domain_homepage:
-            gedi_domain_homepage[p.netloc] = f"{p.scheme}://{p.netloc}/"
-
-    homepage_probe_urls = list(set(gedi_domain_homepage.values()))
-    print(f"\n[3a/4] Homepage probe per {len(homepage_probe_urls)} domini GEDI"
-          f" (concorrenza: {concurrency})...")
-    homepage_probe_results = asyncio.run(
+    urls_for_playwright = [u for u in all_unique_urls if u not in url_skip_reasons]
+    print(f"\n[3/4] Playwright check per {len(urls_for_playwright)} URL (concorrenza: {concurrency})...")
+    playwright_results = asyncio.run(
         playwright_checker.check_urls_batch(
-            homepage_probe_urls, concurrency=concurrency,
-            timeout_sec=timeout_sec, verbose=True,
+            urls_for_playwright,
+            concurrency=concurrency,
+            timeout_sec=timeout_sec,
+            verbose=True,
         )
     )
-
-    # Domini senza Nielsen in homepage: no SDK, nessun errore tecnico, nessun redirect
-    domains_no_nielsen = set()
-    for netloc, hp_url in gedi_domain_homepage.items():
-        res = homepage_probe_results.get(hp_url, {})
-        if not res.get('sdk_loaded') and not res.get('error') and not res.get('final_url'):
-            domains_no_nielsen.add(netloc)
-
-    # Phase 3b: check sulle URL anomale
-    playwright_results = {}
-    urls_for_pw = []
-
-    for u in all_unique_urls:
-        p = urlparse(u)
-        is_gedi_url = any(s['is_gedi'] for s in by_url.get(u, []))
-
-        if u in homepage_probe_results:
-            # URL gia controllata nella probe: riusa il risultato
-            playwright_results[u] = homepage_probe_results[u]
-        elif is_gedi_url and p.netloc in domains_no_nielsen:
-            playwright_results[u] = {
-                'sdk_loaded': False, 'ping_sent': False,
-                'sdk_url': None, 'ping_url': None,
-                'error': None, 'final_url': None, 'http_status': None,
-                'homepage_no_sdk': True,
-            }
-        else:
-            urls_for_pw.append(u)
-
-    n_inherited = len(playwright_results)
-    print(f"\n[3b/4] Playwright check per {len(urls_for_pw)} URL"
-          f" (concorrenza: {concurrency}, {n_inherited} ereditate da homepage probe)...")
-    actual_results = asyncio.run(
-        playwright_checker.check_urls_batch(
-            urls_for_pw, concurrency=concurrency,
-            timeout_sec=timeout_sec, verbose=True,
-        )
-    )
-    playwright_results.update(actual_results)
+    # Aggiunge i risultati pre-compilati per le URL saltate
+    for u, reason in url_skip_reasons.items():
+        playwright_results[u] = {
+            'tlh_loaded': False, 'tlh_url': None,
+            'sdk_loaded': False, 'sdk_url': None,
+            'ping_sent':  False, 'ping_url': None,
+            'error': None, 'final_url': None, 'http_status': None,
+            'http_to_https': False, 'skipped_reason': reason,
+        }
 
     # ----------------------------------------------------------------
     # 4. Report + Mail
     # ----------------------------------------------------------------
     print(f"\n[4/4] Generazione report...")
-    report_path = report_builder.build_report(
+    gedi_path, manzoni_path = report_builder.build_reports(
         segnalazioni, tlh_results, playwright_results, output_path
     )
 
     if not args.no_mail:
         testo = mailer.build_testo_mail(segnalazioni, tlh_results, playwright_results)
         print(f"\n[mail] Invio report...")
-        mailer.invia_report(report_path, testo, config)
+        mailer.invia_report([gedi_path, manzoni_path], testo, config)
     else:
         print("\n[mail] Skip invio mail (--no-mail)")
 
