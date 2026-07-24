@@ -47,8 +47,6 @@ La cartella root arriva da Audicom con questa struttura (esempio reale: `06_2026
 - 57 Excel con Errore 21 (Zero page views) → 2170 URL totali
 - 1 Excel con Errore 22 (Troppi page views) → 48 URL (solo La Repubblica desktop)
 
-**Nota:** le cartelle `dinamico` contengono solo PDF senza anomalie da verificare → ignorarle.
-
 ---
 
 ## Cosa deve fare il sistema
@@ -63,7 +61,7 @@ La cartella root arriva da Audicom con questa struttura (esempio reale: `06_2026
 
 ### 2. Analisi per errore 21 (Zero Page Views)
 
-> **Nota:** nel task originale era indicato "errore 22" ma dagli Excel reali Audicom **Errore 21 = Zero page views** e Errore 22 = Troppi page views. Il sistema deve gestire l'Errore 21 come priorità.
+> **Nota:** nel task originale era indicato "errore 22" ma dagli Excel reali Audicom **Errore 21 = Zero page views** e Errore 22 = Troppi page views.
 
 #### Siti interni GEDI
 
@@ -74,11 +72,15 @@ La cartella root arriva da Audicom con questa struttura (esempio reale: `06_2026
 - Risultato: `config presente` / `config assente` / `config con nielsenStatic vuoto`
 
 **Step B - Verifica con Playwright:**
-- Se `matched=False` senza errori TLH → skip: Nielsen certamente assente su quel dominio
-- Se `matched=True` (con o senza `nielsenStatic`) → aprire la pagina con Playwright
-- Verificare la presenza dell'SDK Nielsen in pagina (request verso `cdn-gl.imrworldwide.com/conf/`)
+- Playwright gira su tutte le URL GEDI indipendentemente dall'esito TLH (il browser
+  segue redirect che il TLH non vede — skippare in base al TLH rischierebbe falsi negativi)
+- **Ottimizzazione homepage probe:** prima di controllare le URL anomale, si apre
+  l'homepage di ogni dominio GEDI unico. Se l'homepage non carica l'SDK (senza errori
+  né redirect), tutte le URL anomale di quel dominio ereditano sdk=No, ping=No con la
+  nota "Homepage senza mapping Nielsen" senza riaprire il browser
+- Verificare la presenza dell'SDK Nielsen (request verso `cdn-gl.imrworldwide.com/conf/`)
 - Verificare l'uscita del ping Nielsen (request verso `imrworldwide.com/cgi-bin/gn`)
-- **Nota**: SDK assente implica ping assente — il ping richiede che l'SDK sia caricato e inizializzato
+- **Nota**: SDK assente implica ping assente — il ping richiede che l'SDK sia caricato
 - **Nota**: il ping può essere rilevato anche senza consensare la CMP (session ping)
 - **Futuro**: valutare la possibilità di consensare la CMP per verifica completa
 
