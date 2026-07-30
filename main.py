@@ -46,25 +46,45 @@ def run(args, config):
     # ----------------------------------------------------------------
     print(f"\n[1/4] Parsing Excel da: {segnalazioni_path}")
     segnalazioni = excel_parser.find_segnalazioni(segnalazioni_path)
-    excel_parser.stampa_riepilogo(segnalazioni)
 
     if not segnalazioni:
         print("Nessuna segnalazione trovata. Controlla il path in config.yaml.")
         return
 
-    # Escludi URL mobile: il check browser non è applicabile (impossibile simulare app native)
-    n_before = len(segnalazioni)
-    segnalazioni = [s for s in segnalazioni if 'mobile' not in s['tipo']]
-    n_skipped_mobile = n_before - len(segnalazioni)
-    if n_skipped_mobile:
-        print(f"  Escluse {n_skipped_mobile} segnalazioni mobile (solo desktop supportato)")
-
-    if not segnalazioni:
-        print("Nessuna segnalazione desktop trovata.")
+    # --- Filtro --tipo ---
+    if args.tipo == "gedi":
+        segnalazioni = [s for s in segnalazioni if s['is_gedi']]
+        print(f"  --tipo gedi: solo siti interni GEDI")
+    elif args.tipo == "manzoni":
+        segnalazioni = [s for s in segnalazioni if not s['is_gedi']]
+        print(f"  --tipo manzoni: solo editori terzi Manzoni")
+    if args.tipo and not segnalazioni:
+        print(f"  Nessuna segnalazione trovata per --tipo {args.tipo}.")
         return
+
+    # --- Filtro --domain ---
+    if args.domain:
+        n_prima = len(set(s['url'] for s in segnalazioni))
+        segnalazioni = [s for s in segnalazioni if args.domain in s['url']]
+        n_dopo = len(set(s['url'] for s in segnalazioni))
+        print(f"  --domain '{args.domain}': {n_prima} → {n_dopo} URL uniche")
+        if not segnalazioni:
+            print(f"  Nessuna URL trovata per il dominio '{args.domain}'.")
+            return
+
+    excel_parser.stampa_riepilogo(segnalazioni)
 
     by_url = excel_parser.get_unique_urls(segnalazioni)
     all_unique_urls  = list(by_url.keys())
+
+    # --- Filtro --limit ---
+    if args.limit and args.limit < len(all_unique_urls):
+        all_unique_urls = all_unique_urls[:args.limit]
+        limited_set     = set(all_unique_urls)
+        segnalazioni    = [s for s in segnalazioni if s['url'] in limited_set]
+        by_url          = {u: v for u, v in by_url.items() if u in limited_set}
+        print(f"  --limit {args.limit}: analisi limitata alle prime {len(all_unique_urls)} URL")
+
     gedi_unique_urls = [u for u in all_unique_urls if any(s['is_gedi'] for s in by_url[u])]
 
     # Pattern URL non tracciabili (login, API, funnel, ecc.)
@@ -77,7 +97,9 @@ def run(args, config):
     def _skip_reason(url):
         for p in skip_patterns:
             if p in url:
-                return f"URL non tracciabile ({p.strip('/')}): escludere dal mapping TLH"
+                if p == '/corporate/privacy':
+                    return "URL cookie/privacy policy interna GEDI"
+                return f"URL di servizio ({p.strip('/')}): da verificare se necessaria la misurazione Nielsen"
         return None
 
     url_skip_reasons = {u: _skip_reason(u) for u in all_unique_urls if _skip_reason(u)}
@@ -95,40 +117,59 @@ def run(args, config):
         print("  (nessuna URL GEDI)")
 
     # ----------------------------------------------------------------
-    # 3. Playwright check (tutte le URL tranne quelle pre-filtrate)
+    # 3. Playwright check (tutte le URL — nessuna esclusa)
+    #    Le URL Errore 22 usano finestra da 30s (metodologia PwC semi-statico),
+    #    tutte le altre usano il fast path event-driven (5s).
     # ----------------------------------------------------------------
-    urls_for_playwright = [u for u in all_unique_urls if u not in url_skip_reasons]
-    print(f"\n[3/4] Playwright check per {len(urls_for_playwright)} URL (concorrenza: {concurrency})...")
-    playwright_results = asyncio.run(
-        playwright_checker.check_urls_batch(
-            urls_for_playwright,
-            concurrency=concurrency,
-            timeout_sec=timeout_sec,
-            verbose=True,
-        )
-    )
-    # Aggiunge i risultati pre-compilati per le URL saltate
+    errore22_urls = [u for u in all_unique_urls if any(s.get('errore') == 'Errore 22' for s in by_url[u])]
+    other_urls    = [u for u in all_unique_urls if u not in set(errore22_urls)]
+
+    print(f"\n[3/4] Playwright check per {len(all_unique_urls)} URL (concorrenza: {concurrency})...")
+    if errore22_urls:
+        print(f"       {len(other_urls)} URL normali (5s) + {len(errore22_urls)} URL Errore 22 (finestra 30s)")
+
+    async def _run_playwright():
+        results = {}
+        if other_urls:
+            r = await playwright_checker.check_urls_batch(
+                other_urls,
+                concurrency=concurrency,
+                timeout_sec=timeout_sec,
+                observation_sec=5,
+                verbose=True,
+            )
+            results.update(r)
+        if errore22_urls:
+            print(f"\n  [Errore 22] Avvio finestra 30s per {len(errore22_urls)} URL...")
+            r = await playwright_checker.check_urls_batch(
+                errore22_urls,
+                concurrency=concurrency,
+                timeout_sec=timeout_sec + 30,
+                observation_sec=30,
+                verbose=True,
+            )
+            results.update(r)
+        return results
+
+    playwright_results = asyncio.run(_run_playwright())
+    # Per le URL di servizio aggiunge solo una nota informativa (senza bloccare il check)
     for u, reason in url_skip_reasons.items():
-        playwright_results[u] = {
-            'tlh_loaded': False, 'tlh_url': None,
-            'sdk_loaded': False, 'sdk_url': None,
-            'ping_sent':  False, 'ping_url': None,
-            'error': None, 'final_url': None, 'http_status': None,
-            'http_to_https': False, 'skipped_reason': reason,
-        }
+        if u in playwright_results:
+            playwright_results[u]['service_note'] = reason
 
     # ----------------------------------------------------------------
     # 4. Report + Mail
     # ----------------------------------------------------------------
     print(f"\n[4/4] Generazione report...")
     gedi_path, manzoni_path = report_builder.build_reports(
-        segnalazioni, tlh_results, playwright_results, output_path
+        segnalazioni, tlh_results, playwright_results, output_path, tipo=args.tipo
     )
 
     if not args.no_mail:
         testo = mailer.build_testo_mail(segnalazioni, tlh_results, playwright_results)
+        allegati = [p for p in [gedi_path, manzoni_path] if p]
         print(f"\n[mail] Invio report...")
-        mailer.invia_report([gedi_path, manzoni_path], testo, config)
+        mailer.invia_report(allegati, testo, config)
     else:
         print("\n[mail] Skip invio mail (--no-mail)")
 
@@ -164,8 +205,11 @@ def run_single_url(url, config):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Auto Debug Nielsen")
     parser.add_argument("--no-mail", action="store_true", help="Non invia la mail finale")
-    parser.add_argument("--url",           type=str,            help="Testa una singola URL (debug)")
-    parser.add_argument("--config",        type=str, default="config.yaml", help="Path del file di config")
+    parser.add_argument("--url",    type=str, help="Testa una singola URL (debug)")
+    parser.add_argument("--config", type=str, default="config.yaml", help="Path del file di config")
+    parser.add_argument("--domain", type=str, help="Limita l'analisi alle URL che contengono questo dominio (es. repubblica.it)")
+    parser.add_argument("--limit",  type=int, help="Limita l'analisi alle prime N URL uniche")
+    parser.add_argument("--tipo",   choices=["gedi", "manzoni"], help="Analizza solo siti interni GEDI ('gedi') o solo editori terzi Manzoni ('manzoni')")
     args = parser.parse_args()
 
     config = load_config(args.config)

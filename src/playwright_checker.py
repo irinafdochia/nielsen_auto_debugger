@@ -26,9 +26,11 @@ _TLH_DOM_CHECK_JS = """
         'tlh.js', 'tlh_webview.js'
     ];
     for (const script of document.querySelectorAll('head script')) {
+        // data-tbdelay-src: lazy loading via TurboJS (type="tuurbo/javascript")
+        const src = script.src || script.getAttribute('data-tbdelay-src') || '';
         for (const name of names) {
-            if (script.src && script.src.includes(name)) {
-                return script.src;
+            if (src.includes(name)) {
+                return src;
             }
         }
     }
@@ -37,7 +39,7 @@ _TLH_DOM_CHECK_JS = """
 """
 
 
-async def check_url(url, timeout_sec=30):
+async def check_url(url, timeout_sec=30, observation_sec=5):
     """
     Apre l'URL con Playwright e verifica TLH, SDK e ping Nielsen.
 
@@ -56,21 +58,31 @@ async def check_url(url, timeout_sec=30):
     """
     result = {
         'tlh_loaded': False, 'tlh_url': None,
-        'sdk_loaded': False, 'sdk_url': None,
-        'ping_sent':  False, 'ping_url': None,
+        'sdk_loaded': False, 'sdk_url': None, 'sdk_appid_invalid': False, 'sdk_count': 0,
+        'ping_sent':  False, 'ping_url': None, 'ping_count': 0,
         'error': None, 'final_url': None, 'http_status': None,
         'http_to_https': False,
     }
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
         context = await browser.new_context(
             ignore_https_errors=True,
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
+                "Chrome/124.0.0.0 Safari/537.36"
             ),
+            viewport={"width": 1280, "height": 800},
+            locale="it-IT",
+            extra_http_headers={"Accept-Language": "it-IT,it;q=0.9,en;q=0.8"},
+        )
+        # Rimuove navigator.webdriver prima che la pagina carichi (principale segnale anti-bot)
+        await context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
         page = await context.new_page()
 
@@ -79,14 +91,20 @@ async def check_url(url, timeout_sec=30):
 
         def on_request(request):
             req_url = request.url
-            if SDK_PATTERN in req_url and not result['sdk_loaded']:
-                result['sdk_loaded'] = True
-                result['sdk_url'] = req_url
-                sdk_event.set()
-            if PING_PATTERN in req_url and not result['ping_sent']:
-                result['ping_sent'] = True
-                result['ping_url'] = req_url
-                ping_event.set()
+            if SDK_PATTERN in req_url:
+                result['sdk_count'] += 1
+                if not result['sdk_loaded']:
+                    result['sdk_loaded'] = True
+                    result['sdk_url'] = req_url
+                    appid = req_url.split('/conf/')[-1].split('.js')[0].split('?')[0].split('#')[0]
+                    result['sdk_appid_invalid'] = (appid == 'undefined' or not appid)
+                    sdk_event.set()
+            if PING_PATTERN in req_url:
+                result['ping_count'] += 1
+                if not result['ping_sent']:
+                    result['ping_sent'] = True
+                    result['ping_url'] = req_url
+                    ping_event.set()
 
         page.on("request", on_request)
 
@@ -115,29 +133,34 @@ async def check_url(url, timeout_sec=30):
                 except Exception:
                     pass  # pagina crashata o JS bloccato: tlh_loaded rimane False
 
-                # Aspetta SDK (max 5s); se arriva, aspetta ping (max 5s aggiuntivi)
-                try:
-                    await asyncio.wait_for(sdk_event.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    pass
-
-                if result['sdk_loaded']:
+                if observation_sec > 5:
+                    # Finestra lunga (es. 30s per Errore 22): aspetta l'intero intervallo
+                    # e raccoglie tutti i ping che arrivano, come fa PwC nel check semi-statico.
+                    await asyncio.sleep(observation_sec)
+                else:
+                    # Fast path (Errore 21): event-driven, esce appena arriva SDK+ping
                     try:
-                        await asyncio.wait_for(ping_event.wait(), timeout=5.0)
+                        await asyncio.wait_for(sdk_event.wait(), timeout=5.0)
                     except asyncio.TimeoutError:
                         pass
+                    if result['sdk_loaded']:
+                        try:
+                            await asyncio.wait_for(ping_event.wait(), timeout=5.0)
+                        except asyncio.TimeoutError:
+                            pass
 
         except PWTimeout:
             result['error'] = f"Timeout ({timeout_sec}s)"
         except Exception as e:
-            result['error'] = str(e)[:200]
+            # Playwright errors includono verbose "Call log:" multi-riga; prendiamo solo la prima riga
+            result['error'] = str(e).split('\n')[0][:200]
         finally:
             await browser.close()
 
     return result
 
 
-async def check_urls_batch(urls, concurrency=3, timeout_sec=30, verbose=True):
+async def check_urls_batch(urls, concurrency=3, timeout_sec=30, observation_sec=5, verbose=True):
     """
     Controlla una lista di URL in parallelo con un limite di concorrenza.
     Restituisce un dict { url: result }.
@@ -149,7 +172,7 @@ async def check_urls_batch(urls, concurrency=3, timeout_sec=30, verbose=True):
 
     async def check_one(url):
         async with semaphore:
-            res = await check_url(url, timeout_sec=timeout_sec)
+            res = await check_url(url, timeout_sec=timeout_sec, observation_sec=observation_sec)
             results[url] = res
             done[0] += 1
             if verbose:
