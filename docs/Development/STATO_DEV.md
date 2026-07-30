@@ -229,6 +229,25 @@ Il corpo mail è testo plain con le numeriche aggregate (generato da `mailer.bui
 
 ---
 
+## Comportamenti implementati (luglio 2026)
+
+| Comportamento | File | Dettaglio |
+|---|---|---|
+| Errori Playwright puliti | `playwright_checker.py` | `str(e).split('\n')[0]` — elimina la verbosa sezione "Call log:" dal messaggio d'errore |
+| Skip URL privacy/cookie | `config.yaml` + `main.py` | `/corporate/privacy` in `skip_url_patterns`; nota specifica "non necessaria la misurazione Nielsen" |
+| Skip articoli vetusti | `main.py` | URL con `/YYYY/` (anno < anno corrente) saltate da Playwright; nota "Pagina staticizzata" |
+| Riga grigia | `report_builder.py` | Sfondo grigio (`D0D0D0`) per: `http://`, HTTP ≥ 400, errori/timeout Playwright, redirect, articoli vetusti |
+| N/A per errori/timeout | `report_builder.py` | Colonne TLH/SDK/Ping mostrano "N/A" (non "No") quando Playwright non ha potuto verificare la pagina |
+| Note errori leggibili | `report_builder.py` | Timeout → "Timeout di navigazione: impossibile verificare..."; ERR_CONNECTION_RESET → "Errore di connessione: server non raggiungibile" |
+| Nuova Soluzione: regexp mapping | `report_builder.py` | Quando TLH Sì + Config Sì + Mapping Sì + SDK No → "Aggiungere regexp nel mapping Nielsen" (la URL manca nel file `nielsen_static_mapping_*.js`) |
+| Wrap solo colonna Note (GEDI) | `report_builder.py` | Nel sheet GEDI, solo la colonna "Note" va a capo (`wrap_text=True`); tutte le altre rimangono su riga singola. Bordi `thin` grigi su ogni cella (header + dati) per distinguerle visivamente. |
+| Errore 22 — conteggio ping | `playwright_checker.py` + `report_builder.py` | `ping_count` conta tutti i ping intercettati (non solo il primo). Nel sheet Errore 22: cella "Ping inviato" mostra il numero; verde=1 (corretto), giallo=0 (non riprodotto), rosso≥2 (confermato). Colonna "Soluzione" descrive il problema con il numero di ping. |
+| Sheet App nel report GEDI | `excel_parser.py` + `report_builder.py` + `main.py` | `read_app_report()` legge `Apps_Report_GEDI.xlsx` dalla root delle segnalazioni. Sheet "App" aggiunto al report GEDI con tutte le app: OK=verde, KO=rosso, NA=grigio. |
+| `/api/` rimosso dagli skip | `config.yaml` | Le URL con `/api/` nel path vengono ora testate con Playwright. Se sono pagine HTML con Nielsen, vengono rilevate; se sono endpoint API puri, finiscono come righe grigie con errore. |
+| Errore 22 — finestra osservazione 30s | `playwright_checker.py` + `main.py` | Le URL classificate come Errore 22 usano `ping_observation_sec=30` (metodologia PwC: apre la pagina, aspetta 30 secondi interi, conta tutti i ping). Le URL normali (Errore 21) continuano con il fast path event-driven (5s). In `main.py` le due liste vengono eseguite in coroutine separate. Il `timeout_sec` per le URL Errore 22 è aumentato di +30s per includere la finestra di osservazione. |
+
+---
+
 ## Cosa manca / TODO futuri
 
 - [ ] **Consenso CMP per Playwright**: oggi il check è senza consenso. Futuramente si

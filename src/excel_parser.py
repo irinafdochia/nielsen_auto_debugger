@@ -122,6 +122,33 @@ def _extract_from_excel(xlsx_path, gruppo, testata, tipo, is_gedi):
     return rows
 
 
+def read_app_report(segnalazioni_path):
+    """
+    Legge Apps_Report_GEDI.xlsx dalla root delle segnalazioni Audicom.
+    Restituisce lista di dict (una per app) o [] se il file non esiste.
+    """
+    path = os.path.join(segnalazioni_path, 'Apps_Report_GEDI.xlsx')
+    if not os.path.exists(path):
+        return []
+    try:
+        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+        ws = wb.active
+        headers = None
+        rows = []
+        for row in ws.iter_rows(values_only=True):
+            if headers is None:
+                headers = [str(c).strip() if c else '' for c in row]
+                continue
+            if not any(row):
+                continue
+            rows.append(dict(zip(headers, row)))
+        wb.close()
+        return rows
+    except Exception as e:
+        print(f"  [WARN] Impossibile leggere Apps_Report_GEDI.xlsx: {e}")
+        return []
+
+
 def get_unique_urls(segnalazioni):
     """
     Restituisce un dict { url: [segnalazione, ...] } raggruppando

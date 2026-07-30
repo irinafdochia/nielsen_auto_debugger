@@ -99,7 +99,7 @@ Coordina l'intera esecuzione in quattro step sequenziali.
 
 ```
 [1/4] Parsing Excel       → chiama excel_parser.find_segnalazioni()
-                            filtra out tutte le segnalazioni con tipo "mobile"
+
 [2/4] TLH matching        → chiama tlh_matcher.check_urls_batch()  (solo URL GEDI)
 [3/4] Playwright check    → chiama playwright_checker.check_urls_batch()
                             esclude le URL che matchano skip_url_patterns (config.yaml)
@@ -109,7 +109,6 @@ Coordina l'intera esecuzione in quattro step sequenziali.
 ```
 
 **Filtri applicati prima di Playwright:**
-- `semi_statico_mobile`: escluse dalla lista segnalazioni (impossibile simulare app native)
 - URL che matchano `skip_url_patterns` (`/api/`, `/login`, `/account/`, ecc.):
   non vengono passate a Playwright; nel report appaiono con nota esplicativa
 
@@ -319,25 +318,36 @@ mapping Nielsen (TLH), SDK e ping (Playwright).
 |---|---|
 | URL | L'URL segnalata |
 | Testata | Testata(e) che ha segnalato quell'URL |
-| TLH in pagina | Sì/No — verde/rosso; N/A se URL skippata |
+| TLH in pagina | Sì/No — verde/rosso; **N/A** se URL non verificabile (skip, errore, timeout) |
 | Config TLH trovata | Sì/No dal TLH matching — verde/rosso |
 | Mapping Nielsen | Sì/No — verde/giallo (config trovata ma senza `nielsenStatic`) |
 | Soluzione | Azione correttiva suggerita — giallo |
-| SDK in pagina | Sì/No — verde/rosso; N/A se URL skippata |
-| Ping inviato | Sì/No — verde/rosso; N/A se URL skippata |
+| SDK in pagina | Sì/No — verde/rosso; **N/A** se URL non verificabile |
+| Ping inviato | Sì/No — verde/rosso; **N/A** se URL non verificabile |
 | Nielsen Static URL | URL del file JS di mapping Nielsen |
-| Note | Motivo skip, redirect HTTP→HTTPS, errori Playwright, HTTP status |
+| Note | Motivo skip, errore/timeout, redirect, HTTP status |
 | Tipo accesso | `semi_statico_desktop` |
 
-**Logica Soluzione:**
+**Logica Soluzione** (in ordine di priorità):
 - `TLH in pagina = No` → "Inserire TLH in pagina"
 - `TLH in pagina = Sì, Config TLH trovata = No` → "Aggiungere config TLH"
 - `Config TLH trovata = Sì, Mapping Nielsen = No` → "Aggiungere mapping Nielsen"
+- `TLH Sì + Config Sì + Mapping Sì + SDK No` → "Aggiungere regexp nel mapping Nielsen" *(la URL manca nel file `nielsen_static_mapping_*.js`; non si tratta di aggiungere il mapping — quello c'è già — ma di aggiungere la regola regexp per questa URL)*
 
-**URL skippate** (pattern da `config.yaml → skip_url_patterns`, es. `/api/`, `/login`):
-le celle Playwright mostrano "N/A" con sfondo bianco; la nota spiega perché.
-URL `http://` che redirigono su `https://`: stesso trattamento — da escludere
-dalle segnalazioni Audicom in quanto non gestibili lato TLH.
+**Che cosa significa N/A in "TLH in pagina":**
+- URL saltata intenzionalmente (pattern skip: `/api/`, `/login`, `/corporate/privacy`, ecc.)
+- URL `http://` che redirige su `https://` (non gestibile lato TLH)
+- Errore di navigazione Playwright (timeout, connessione rifiutata, ecc.) — la nota spiega il motivo
+- Articolo vecchio staticizzato (anno < anno corrente nel path URL)
+
+**Righe grigie:** URL da ignorare visivamente — `http://`, errori HTTP ≥ 400, errori/timeout Playwright, redirect, articoli vetusti.
+
+**Formattazione celle:** bordi `thin` su tutte le celle (header + dati) per distinguerle visivamente. Solo la colonna **Note** va a capo automaticamente; tutte le altre rimangono su riga singola.
+
+**URL skippate automaticamente:**
+- Pattern `config.yaml → skip_url_patterns` (es. `/api/`, `/login`, `/corporate/privacy`): le celle Playwright mostrano N/A; la nota spiega il motivo specifico.
+- `/corporate/privacy`: nota "URL cookie/privacy policy interna GEDI: non necessaria la misurazione Nielsen"
+- **Articoli vetusti** (`/YYYY/` con anno < anno corrente): nota "Pagina staticizzata: non tracciabile con Nielsen"
 
 #### `nielsen_manzoni_YYYYMMDD_HHMM.xlsx` — editori terzi Manzoni
 
@@ -349,12 +359,13 @@ Verifica la presenza dell'SDK e del ping Nielsen in pagina.
 | Gruppo | Nome editore terzo |
 | Testata | Testata(e) che ha segnalato quell'URL |
 | Tipo accesso | `semi_statico_desktop` |
-| SDK in pagina | Sì/No — verde/rosso; N/A se URL skippata |
-| Ping inviato | Sì/No — verde/rosso; N/A se URL skippata |
-| Note | Motivo skip, redirect HTTP→HTTPS, errori Playwright, HTTP status |
+| SDK in pagina | Sì/No — verde/rosso; **N/A** se URL non verificabile |
+| Ping inviato | Sì/No — verde/rosso; **N/A** se URL non verificabile |
+| Note | Motivo skip, errore/timeout, redirect, HTTP status |
 
 Stessa URL segnalata da più testate → **una sola riga** con le testate concatenate.
-URL `semi_statico_mobile` escluse a monte: Playwright non può simulare app native.
+Stessa logica per `semi_statico_mobile`: testate con lo stesso browser desktop (il matching TLH/SDK/ping è URL-based, non dipende dallo user agent). La colonna "Tipo accesso" mostra `semi_statico_mobile` per distinguerle visivamente.
+**Righe grigie:** stesse casistiche del report GEDI (errori, redirect, http, articoli vetusti).
 
 ---
 

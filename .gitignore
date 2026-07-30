@@ -1,4 +1,15 @@
+# Cartelle dati locali — ignora tutto tranne i README
+segnalazioni/*
+!segnalazioni/README.md
+output/*
+!output/README.md
+
+# Vecchia cartella dati (backward compat)
 untracked/
+
+# Python
 __pycache__/
 *.pyc
+
+# macOS
 .DS_Store
