@@ -49,21 +49,14 @@ def build_reports(segnalazioni, tlh_results, playwright_results, output_path, ti
 # Helper: righe da evidenziare in grigio
 # ─────────────────────────────────────────────
 
-def _should_gray_row(url, pw):
+def _should_gray_row(pw):
     """
     Restituisce True per le righe che devono essere grigie:
-    URL http://, errori HTTP >= 400, errori/timeout Playwright.
-    Le URL /corporate/privacy NON sono grigie (vanno lette, non ignorate).
+    Solo per le URL http:// che redirigono su https:// — non sono gestibili lato TLH
+    e vanno escluse dalle segnalazioni Audicom. Tutti gli altri casi (errori, timeout,
+    HTTP 400+) rimangono visibili normalmente con la nota nella colonna Note.
     """
-    if '/corporate/privacy' in url:
-        return False
-    if url.startswith('http://'):
-        return True
-    if pw.get('http_status') and pw['http_status'] >= 400:
-        return True
-    if pw.get('error'):
-        return True
-    return False
+    return bool(pw.get('http_to_https'))
 
 
 def _format_pw_error(error_str):
@@ -148,9 +141,12 @@ def _fill_gedi_sheet(ws, segnalazioni, tlh_results, playwright_results, errore_c
         if not pw_not_verified and not tlh.get('error'):
             if is_errore22:
                 if ping_count >= 2:
-                    soluzione = f"Doppia inizializzazione Nielsen: {ping_count} ping rilevati"
+                    soluzione = (
+                        f"Doppia inizializzazione Nielsen: {ping_count} ping rilevati in 30s. "
+                        f"Verificare che lo snippet Nielsen non venga eseguito due volte (TLH, template, tag manager)"
+                    )
                 elif ping_count == 0:
-                    soluzione = "Errore non riprodotto: 0 ping rilevati"
+                    soluzione = "Errore non riprodotto: nessun ping rilevato nella finestra di osservazione (30s)"
                 # ping_count == 1: comportamento corretto, nessuna azione
             else:
                 if not tlh_in_page:
@@ -217,6 +213,7 @@ def _fill_gedi_sheet(ws, segnalazioni, tlh_results, playwright_results, errore_c
         else:
             _fill_cell("SDK in pagina", sdk_loaded, skipped=pw_not_verified)
         if is_errore22 and not pw_not_verified:
+            # Errore 22: "Ping inviato" mostra il conteggio; verde=1, giallo=0, rosso≥2
             ping22_color = COL_OK if ping_count == 1 else (COL_WARN if ping_count == 0 else COL_KO)
             ws.cell(row_idx, headers.index("Ping inviato") + 1).fill = PatternFill("solid", fgColor=ping22_color)
         else:
@@ -226,7 +223,7 @@ def _fill_gedi_sheet(ws, segnalazioni, tlh_results, playwright_results, errore_c
                 "solid", fgColor=COL_WARN)
 
         # Riga grigia per URL da ignorare: http://, errori HTTP >= 400, errori/timeout Playwright
-        if _should_gray_row(url, pw):
+        if _should_gray_row(pw):
             gray_fill = PatternFill("solid", fgColor=COL_GRAY)
             for col_idx in range(1, len(headers) + 1):
                 ws.cell(row_idx, col_idx).fill = gray_fill
@@ -423,7 +420,7 @@ def _fill_manzoni_sheet(ws, segnalazioni, playwright_results):
             ws.cell(row_idx, sol_col).fill = PatternFill("solid", fgColor=COL_WARN)
 
         # Riga grigia per URL da ignorare: http://, errori HTTP >= 400, errori/timeout Playwright
-        if _should_gray_row(url, pw):
+        if _should_gray_row(pw):
             gray_fill = PatternFill("solid", fgColor=COL_GRAY)
             for col_idx in range(1, len(headers) + 1):
                 ws.cell(row_idx, col_idx).fill = gray_fill

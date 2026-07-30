@@ -135,7 +135,7 @@ def run(args, config):
                 other_urls,
                 concurrency=concurrency,
                 timeout_sec=timeout_sec,
-                ping_observation_sec=5,
+                observation_sec=5,
                 verbose=True,
             )
             results.update(r)
@@ -145,7 +145,7 @@ def run(args, config):
                 errore22_urls,
                 concurrency=concurrency,
                 timeout_sec=timeout_sec + 30,
-                ping_observation_sec=30,
+                observation_sec=30,
                 verbose=True,
             )
             results.update(r)

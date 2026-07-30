@@ -26,9 +26,11 @@ _TLH_DOM_CHECK_JS = """
         'tlh.js', 'tlh_webview.js'
     ];
     for (const script of document.querySelectorAll('head script')) {
+        // data-tbdelay-src: lazy loading via TurboJS (type="tuurbo/javascript")
+        const src = script.src || script.getAttribute('data-tbdelay-src') || '';
         for (const name of names) {
-            if (script.src && script.src.includes(name)) {
-                return script.src;
+            if (src.includes(name)) {
+                return src;
             }
         }
     }
@@ -37,7 +39,7 @@ _TLH_DOM_CHECK_JS = """
 """
 
 
-async def check_url(url, timeout_sec=30, ping_observation_sec=5):
+async def check_url(url, timeout_sec=30, observation_sec=5):
     """
     Apre l'URL con Playwright e verifica TLH, SDK e ping Nielsen.
 
@@ -56,7 +58,7 @@ async def check_url(url, timeout_sec=30, ping_observation_sec=5):
     """
     result = {
         'tlh_loaded': False, 'tlh_url': None,
-        'sdk_loaded': False, 'sdk_url': None, 'sdk_appid_invalid': False,
+        'sdk_loaded': False, 'sdk_url': None, 'sdk_appid_invalid': False, 'sdk_count': 0,
         'ping_sent':  False, 'ping_url': None, 'ping_count': 0,
         'error': None, 'final_url': None, 'http_status': None,
         'http_to_https': False,
@@ -89,12 +91,14 @@ async def check_url(url, timeout_sec=30, ping_observation_sec=5):
 
         def on_request(request):
             req_url = request.url
-            if SDK_PATTERN in req_url and not result['sdk_loaded']:
-                result['sdk_loaded'] = True
-                result['sdk_url'] = req_url
-                appid = req_url.split('/conf/')[-1].split('.js')[0].split('?')[0].split('#')[0]
-                result['sdk_appid_invalid'] = (appid == 'undefined' or not appid)
-                sdk_event.set()
+            if SDK_PATTERN in req_url:
+                result['sdk_count'] += 1
+                if not result['sdk_loaded']:
+                    result['sdk_loaded'] = True
+                    result['sdk_url'] = req_url
+                    appid = req_url.split('/conf/')[-1].split('.js')[0].split('?')[0].split('#')[0]
+                    result['sdk_appid_invalid'] = (appid == 'undefined' or not appid)
+                    sdk_event.set()
             if PING_PATTERN in req_url:
                 result['ping_count'] += 1
                 if not result['ping_sent']:
@@ -129,10 +133,10 @@ async def check_url(url, timeout_sec=30, ping_observation_sec=5):
                 except Exception:
                     pass  # pagina crashata o JS bloccato: tlh_loaded rimane False
 
-                if ping_observation_sec > 5:
+                if observation_sec > 5:
                     # Finestra lunga (es. 30s per Errore 22): aspetta l'intero intervallo
                     # e raccoglie tutti i ping che arrivano, come fa PwC nel check semi-statico.
-                    await asyncio.sleep(ping_observation_sec)
+                    await asyncio.sleep(observation_sec)
                 else:
                     # Fast path (Errore 21): event-driven, esce appena arriva SDK+ping
                     try:
@@ -156,7 +160,7 @@ async def check_url(url, timeout_sec=30, ping_observation_sec=5):
     return result
 
 
-async def check_urls_batch(urls, concurrency=3, timeout_sec=30, ping_observation_sec=5, verbose=True):
+async def check_urls_batch(urls, concurrency=3, timeout_sec=30, observation_sec=5, verbose=True):
     """
     Controlla una lista di URL in parallelo con un limite di concorrenza.
     Restituisce un dict { url: result }.
@@ -168,7 +172,7 @@ async def check_urls_batch(urls, concurrency=3, timeout_sec=30, ping_observation
 
     async def check_one(url):
         async with semaphore:
-            res = await check_url(url, timeout_sec=timeout_sec, ping_observation_sec=ping_observation_sec)
+            res = await check_url(url, timeout_sec=timeout_sec, observation_sec=observation_sec)
             results[url] = res
             done[0] += 1
             if verbose:
