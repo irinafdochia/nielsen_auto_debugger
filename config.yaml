@@ -2,8 +2,10 @@
 # Configurazione Auto Debug Nielsen
 # ============================================================
 
-# Cartella root con gli Excel Audicom — aggiorna il nome della sottocartella ogni mese
-segnalazioni_path: segnalazioni/06_2026_GEDI-MANZONI
+# Cartella root delle segnalazioni Audicom.
+# Basta mettere la cartella mensile (es. 07_2026_GEDI-MANZONI) dentro segnalazioni/
+# e il sistema la rileva automaticamente — non occorre modificare questo file ogni mese.
+segnalazioni_path: segnalazioni
 
 # Dove salvare il report Excel generato
 output_path: output
@@ -15,14 +17,19 @@ playwright_concurrency: 6
 # Secondi di attesa massima per ogni pagina (incluso caricamento Nielsen)
 playwright_timeout: 30
 
+# Finestra di osservazione per URL normali (Errore 21): event-driven, esce appena
+# riceve SDK+ping o allo scadere di questo valore. Default 10s perché alcuni siti
+# (es. consigli.it) caricano l'SDK Nielsen solo dopo 6-8 secondi dal DOM ready.
+playwright_fast_observation_sec: 10
+
 # Pattern URL da escludere dall'analisi (login, API, funnel, ecc.)
 # Queste URL appaiono nel report con una nota ma non vengono analizzate con Playwright.
 skip_url_patterns:
   - /login
-  - /account/
+  - /account
   - /checkout
   - /registr
-  - /corporate/privacy
+  - /corporate
   - /api/
 
 # ============================================================

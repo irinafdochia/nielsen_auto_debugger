@@ -154,13 +154,16 @@ Gestisce anche la modalità `--url` per testare una singola URL in debug.
 Il file da modificare ogni mese quando cambia la cartella segnalazioni.
 
 ```yaml
-segnalazioni_path: segnalazioni/06_2026_GEDI-MANZONI   ← cambia questo ogni mese
+segnalazioni_path: segnalazioni   ← non serve più cambiarlo ogni mese
 output_path: output
 
 playwright_concurrency: 6   ← quante pagine aprire in parallelo (abbassa se crasha)
 playwright_timeout: 30      ← secondi di attesa per pagina
 
-skip_url_patterns:          ← URL che ricevono solo una nota, comunque verificate
+skip_url_patterns:          ← URL di servizio: comunque verificate da Playwright,
+                              ma la colonna Note del report riporta che la regexp
+                              Nielsen per il perimetro di rilevazione dovrebbe
+                              essere ristretta per escludere questi percorsi.
   - /login
   - /account/
   - /checkout
@@ -202,9 +205,19 @@ Il file `Apps_Report_GEDI.xlsx` nella root viene ignorato (struttura diversa; la
 funzione `read_app_report()` è disponibile in `excel_parser.py` ma non viene chiamata
 automaticamente — da allegare manualmente alla mail se necessario).
 
+**Eccezione GEDI per testate classificate erroneamente da Audicom:** alcune testate
+sono collocate da Nielsen/Audicom fuori dalla cartella `GEDI Gruppo Editoriale`
+(risulterebbero quindi come editori terzi Manzoni), ma appartengono di fatto al gruppo
+GEDI. Il set `GEDI_TESTATE_OVERRIDE` in `excel_parser.py` contiene i nomi di queste
+testate: vengono forzate a `is_gedi=True` e finiscono nel report GEDI con TLH matching
+completo, indipendentemente dalla cartella in cui si trovano nelle segnalazioni Audicom.
+Attualmente include: **Drivek**. Per aggiungerne altre, basta aggiungere il nome esatto
+della cartella testata al set.
+
 **Nota su semi_statico_mobile:** le URL mobile sono pagine web ottimizzate per
-dispositivi mobili, non app native. Il tracciamento Nielsen è URL-based (non dipende
-dallo user agent), quindi vengono analizzate con la stessa logica del desktop.
+dispositivi mobili, non app native. Vengono verificate con emulazione dispositivo
+mobile (iPhone 14: viewport 390×844, User-Agent Safari iOS, `is_mobile=True`).
+Se un URL compare sia come desktop che mobile, viene usato il context desktop.
 
 **Formato degli Excel Audicom:**
 - Riga 1: descrizione errore (es. `"Zero page views"`)
@@ -343,11 +356,16 @@ gli passa le URL via stdin, e converte il JSON di output nel formato Python.
 
 Le due tipologie vengono eseguite in due batch async separati in `main.py`.
 
+**Emulazione mobile:** le URL dove tutte le segnalazioni sono `semi_statico_mobile`
+vengono aperte con `p.devices["iPhone 14"]` (viewport 390×844, UA Safari iOS,
+`is_mobile=True`, `has_touch=True`) e `_STEALTH_MOBILE` con `navigator_platform=iPhone`.
+Le URL che compaiono sia come desktop che mobile usano il context desktop.
+
 **Stealth anti-bot:** per ridurre i `ERR_CONNECTION_RESET` su siti con protezioni:
 - `--disable-blink-features=AutomationControlled`
 - rimozione di `navigator.webdriver` via `add_init_script`
-- User-Agent Chrome su macOS realistico
-- Viewport 1280×800, locale `it-IT`, header `Accept-Language: it-IT`
+- User-Agent Chrome su macOS realistico (desktop) / Safari iOS (mobile)
+- Viewport 1280×800 (desktop) / 390×844 (mobile), locale `it-IT`, header `Accept-Language: it-IT`
 
 **HTTP → HTTPS:** se l'URL originale è `http://` e il browser finisce su `https://`,
 il risultato contiene `http_to_https=True` e l'analisi TLH/SDK/ping viene saltata.
@@ -381,7 +399,8 @@ valori positivi e rosso per quelli negativi, per leggere a colpo d'occhio le lac
 | Testata | Testata(e) che ha segnalato quell'URL |
 | TLH in pagina | Sì/No — verde/rosso; **N/A** se non verificabile |
 | Config TLH trovata | Sì/No — verde/rosso |
-| Mapping Nielsen | Sì/No — verde/giallo |
+| Mapping Nielsen | Sì/No — verde/giallo (config TLH ha il campo `nielsenStatic`) |
+| Bundle Nielsen | Sì/No — verde/rosso; **N/A** se mapping non previsto. Verifica che il file `nielsen_static_mapping_*.js` venga effettivamente scaricato dal browser a runtime |
 | Soluzione | Azione correttiva suggerita — giallo |
 | SDK in pagina | Sì/No — verde/rosso; giallo se `appId` è `undefined` |
 | Ping inviato | Sì/No — verde/rosso; **per Errore 22**: numero intero (verde=1, giallo=0, rosso≥2) |
@@ -393,8 +412,9 @@ valori positivi e rosso per quelli negativi, per leggere a colpo d'occhio le lac
 - `TLH in pagina = No` → "Inserire TLH in pagina"
 - `TLH Sì, Config No` → "Aggiungere config TLH"
 - `Config Sì, Mapping No` → "Aggiungere mapping Nielsen"
-- `Mapping Sì, SDK No, appId undefined` → "AppId Nielsen non definito: aggiungere/correggere regexp nel mapping Nielsen"
-- `Mapping Sì, SDK No` → "Aggiungere regexp nel mapping Nielsen"
+- `Mapping Sì, Bundle No` → "Bundle Nielsen non scaricato: probabilmente un errore lato client (CMP o errore JS) ne impedisce il download — verificare la console del browser"
+- `Bundle Sì, SDK No, appId undefined` → "AppId Nielsen non definito: aggiungere/correggere regexp nel mapping Nielsen"
+- `Bundle Sì, SDK No` → "Aggiungere regexp nel mapping Nielsen"
 
 **Logica Soluzione — Errore 22** (doppia inizializzazione):
 - `ping_count ≥ 2` → "Doppia inizializzazione Nielsen: N ping rilevati in 30s. Verificare che lo snippet Nielsen non venga eseguito due volte"
@@ -473,9 +493,12 @@ Se `--tipo` è specificato, solo il report corrispondente viene allegato.
 
 ## Come si aggiorna ogni mese
 
-1. Mettere la nuova cartella segnalazioni dentro `segnalazioni/`
-2. Aggiornare `segnalazioni_path` in `config.yaml` con il nome della nuova sottocartella
-3. Lanciare `python3 main.py`
+1. Mettere la nuova cartella segnalazioni dentro `segnalazioni/` (es. `07_2026_GEDI-MANZONI`)
+2. Lanciare `python3 main.py`
+
+`config.yaml` non va più modificato: il sistema rileva automaticamente la sottocartella
+mensile più recente (in base alla data di modifica). Se in `segnalazioni/` sono presenti
+più cartelle mensili, viene usata quella modificata per ultima.
 
 ---
 
