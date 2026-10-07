@@ -103,6 +103,7 @@ def _fill_gedi_sheet(ws, segnalazioni, tlh_results, playwright_results, errore_c
         "TLH in pagina",
         "Config TLH trovata",
         "Mapping Nielsen",
+        "Bundle Nielsen",
         "Soluzione",
         "SDK in pagina",
         "Ping inviato",
@@ -126,10 +127,11 @@ def _fill_gedi_sheet(ws, segnalazioni, tlh_results, playwright_results, errore_c
         tlh_matched = tlh.get('matched',     False)
         has_nielsen = tlh.get('has_nielsen', False)
         tlh_in_page = pw.get('tlh_loaded',  False)
-        sdk_loaded       = pw.get('sdk_loaded',       False)
-        sdk_appid_invalid= pw.get('sdk_appid_invalid', False)
-        ping_sent        = pw.get('ping_sent',         False)
-        ping_count       = pw.get('ping_count',        0)
+        sdk_loaded            = pw.get('sdk_loaded',            False)
+        sdk_appid_invalid     = pw.get('sdk_appid_invalid',     False)
+        ping_sent             = pw.get('ping_sent',             False)
+        ping_count            = pw.get('ping_count',            0)
+        nielsen_mapping_loaded = pw.get('nielsen_mapping_loaded', False)
         pw_skipped  = bool(pw.get('skipped_reason') or pw.get('http_to_https'))
         pw_error    = bool(pw.get('error'))
         # N/A se URL saltata intenzionalmente O se Playwright non ha potuto verificare (errore/timeout)
@@ -155,10 +157,18 @@ def _fill_gedi_sheet(ws, segnalazioni, tlh_results, playwright_results, errore_c
                     soluzione = "Aggiungere config TLH"
                 elif not has_nielsen:
                     soluzione = "Aggiungere mapping Nielsen"
+                elif not nielsen_mapping_loaded:
+                    soluzione = (
+                        "Bundle Nielsen non scaricato: probabilmente un errore lato client "
+                        "(CMP o errore JS) ne impedisce il download — verificare la console del browser"
+                    )
                 elif sdk_loaded and sdk_appid_invalid:
                     soluzione = "AppId Nielsen non definito: aggiungere/correggere regexp nel mapping Nielsen"
                 elif not sdk_loaded:
                     soluzione = "Aggiungere regexp nel mapping Nielsen"
+
+        if pw.get('service_solution'):
+            soluzione = pw['service_solution']
 
         note_parts = []
         if pw.get('service_note'):
@@ -166,7 +176,7 @@ def _fill_gedi_sheet(ws, segnalazioni, tlh_results, playwright_results, errore_c
         if pw.get('skipped_reason'):
             note_parts.append(pw['skipped_reason'])
         if pw.get('http_to_https') and '/corporate' not in url:
-            note_parts.append("Redirect HTTP->HTTPS: escludere dalle segnalazioni Audicom")
+            note_parts.append("URL HTTP: escludere dalle segnalazioni Audicom")
         if tlh.get('error'):
             note_parts.append(f"TLH err: {tlh['error']}")
         if pw.get('error'):
@@ -178,15 +188,19 @@ def _fill_gedi_sheet(ws, segnalazioni, tlh_results, playwright_results, errore_c
         if pw.get('http_status') and pw['http_status'] >= 400:
             note_parts.append(f"HTTP {pw['http_status']}: pagina non raggiungibile")
 
+        # N/A solo se il dato NON è stato rilevato E il check era incompleto (errore/timeout).
+        # Se il dato è stato rilevato prima dell'errore, va mostrato comunque.
+        bundle_na = (not tlh_matched or not has_nielsen) or (pw_not_verified and not nielsen_mapping_loaded)
         row = [
             url,
             ", ".join(testate),
-            "N/A" if pw_not_verified else _yesno(tlh_in_page),
+            "N/A" if (pw_not_verified and not tlh_in_page) else _yesno(tlh_in_page),
             _yesno(tlh_matched),
             _yesno(has_nielsen) if tlh_matched else "",
+            "N/A" if bundle_na else _yesno(nielsen_mapping_loaded),
             soluzione,
-            "N/A" if pw_not_verified else _yesno(sdk_loaded),
-            "N/A" if pw_not_verified else (str(ping_count) if is_errore22 else _yesno(ping_sent)),
+            "N/A" if (pw_not_verified and not sdk_loaded) else _yesno(sdk_loaded),
+            "N/A" if (pw_not_verified and not ping_sent) else (str(ping_count) if is_errore22 else _yesno(ping_sent)),
             " | ".join(note_parts),
             ", ".join(tipi),
             tlh.get('nielsen_static') or "",
@@ -203,21 +217,22 @@ def _fill_gedi_sheet(ws, segnalazioni, tlh_results, playwright_results, errore_c
             row_idx, headers.index(col_name) + 1
         ).__setattr__('fill', PatternFill("solid", fgColor="FFFFFF" if skipped else (COL_OK if ok else COL_KO)))
 
-        _fill_cell("TLH in pagina",    tlh_in_page, skipped=pw_not_verified)
+        _fill_cell("TLH in pagina",    tlh_in_page, skipped=(pw_not_verified and not tlh_in_page))
         _fill_cell("Config TLH trovata", tlh_matched)
         if tlh_matched:
             ws.cell(row_idx, headers.index("Mapping Nielsen") + 1).fill = PatternFill(
                 "solid", fgColor=COL_OK if has_nielsen else COL_WARN)
-        if sdk_appid_invalid and not pw_not_verified:
+        _fill_cell("Bundle Nielsen", nielsen_mapping_loaded, skipped=bundle_na)
+        if sdk_appid_invalid:
             ws.cell(row_idx, headers.index("SDK in pagina") + 1).fill = PatternFill("solid", fgColor=COL_WARN)
         else:
-            _fill_cell("SDK in pagina", sdk_loaded, skipped=pw_not_verified)
-        if is_errore22 and not pw_not_verified:
+            _fill_cell("SDK in pagina", sdk_loaded, skipped=(pw_not_verified and not sdk_loaded))
+        if is_errore22 and (ping_sent or not pw_not_verified):
             # Errore 22: "Ping inviato" mostra il conteggio; verde=1, giallo=0, rosso≥2
             ping22_color = COL_OK if ping_count == 1 else (COL_WARN if ping_count == 0 else COL_KO)
             ws.cell(row_idx, headers.index("Ping inviato") + 1).fill = PatternFill("solid", fgColor=ping22_color)
         else:
-            _fill_cell("Ping inviato", ping_sent, skipped=pw_not_verified)
+            _fill_cell("Ping inviato", ping_sent, skipped=(pw_not_verified and not ping_sent))
         if soluzione:
             ws.cell(row_idx, headers.index("Soluzione") + 1).fill = PatternFill(
                 "solid", fgColor=COL_WARN)
@@ -250,12 +265,13 @@ def _rip_header_row(ws, label, col_b="", col_c=""):
 def _fill_gedi_riepilogo(ws, segnalazioni, tlh_results, playwright_results):
     all_urls    = set(s['url'] for s in segnalazioni)
     total       = len(all_urls)
-    tlh_in_page = sum(1 for u in all_urls if playwright_results.get(u, {}).get('tlh_loaded'))
-    tlh_matched = sum(1 for u in all_urls if tlh_results.get(u, {}).get('matched'))
-    tlh_nielsen = sum(1 for u in all_urls if tlh_results.get(u, {}).get('has_nielsen'))
-    tlh_err     = sum(1 for u in all_urls if tlh_results.get(u, {}).get('error'))
-    sdk_ok      = sum(1 for u in all_urls if playwright_results.get(u, {}).get('sdk_loaded'))
-    ping_ok     = sum(1 for u in all_urls if playwright_results.get(u, {}).get('ping_sent'))
+    tlh_in_page    = sum(1 for u in all_urls if playwright_results.get(u, {}).get('tlh_loaded'))
+    tlh_matched    = sum(1 for u in all_urls if tlh_results.get(u, {}).get('matched'))
+    tlh_nielsen    = sum(1 for u in all_urls if tlh_results.get(u, {}).get('has_nielsen'))
+    tlh_err        = sum(1 for u in all_urls if tlh_results.get(u, {}).get('error'))
+    bundle_ok      = sum(1 for u in all_urls if playwright_results.get(u, {}).get('nielsen_mapping_loaded'))
+    sdk_ok         = sum(1 for u in all_urls if playwright_results.get(u, {}).get('sdk_loaded'))
+    ping_ok        = sum(1 for u in all_urls if playwright_results.get(u, {}).get('ping_sent'))
     by_testata  = Counter(s['testata'] for s in segnalazioni)
 
     ws.column_dimensions["A"].width = 38
@@ -283,6 +299,7 @@ def _fill_gedi_riepilogo(ws, segnalazioni, tlh_results, playwright_results):
         ("TLH in pagina",      tlh_in_page, total - tlh_in_page),
         ("Config TLH trovata", tlh_matched, total - tlh_matched),
         ("Mapping Nielsen",    tlh_nielsen, total - tlh_nielsen),
+        ("Bundle Nielsen",     bundle_ok,   total - bundle_ok),
         ("SDK in pagina",      sdk_ok,      total - sdk_ok),
         ("Ping inviato",       ping_ok,     total - ping_ok),
     ]
@@ -370,13 +387,16 @@ def _fill_manzoni_sheet(ws, segnalazioni, playwright_results):
             elif not ping_sent:
                 soluzione = "SDK presente ma ping non inviato"
 
+        if pw.get('service_solution'):
+            soluzione = pw['service_solution']
+
         note_parts = []
         if pw.get('service_note'):
             note_parts.append(pw['service_note'])
         if pw.get('skipped_reason'):
             note_parts.append(pw['skipped_reason'])
         if pw.get('http_to_https') and '/corporate' not in url:
-            note_parts.append("URL HTTP con redirect HTTPS: da escludere dalle segnalazioni")
+            note_parts.append("URL HTTP: escludere dalle segnalazioni Audicom (Nielsen traccia la versione HTTPS)")
         if pw.get('error'):
             note_parts.append(_format_pw_error(pw['error']))
         if sdk_appid_invalid:
@@ -391,8 +411,8 @@ def _fill_manzoni_sheet(ws, segnalazioni, playwright_results):
             ", ".join(gruppi),
             ", ".join(testate),
             ", ".join(tipi),
-            "N/A" if pw_not_verified else _yesno(sdk_loaded),
-            "N/A" if pw_not_verified else _yesno(ping_sent),
+            "N/A" if (pw_not_verified and not sdk_loaded) else _yesno(sdk_loaded),
+            "N/A" if (pw_not_verified and not ping_sent) else _yesno(ping_sent),
             soluzione,
             " | ".join(note_parts),
         ]
@@ -407,14 +427,15 @@ def _fill_manzoni_sheet(ws, segnalazioni, playwright_results):
         sdk_col  = headers.index("SDK in pagina") + 1
         ping_col = headers.index("Ping inviato") + 1
         sol_col  = headers.index("Soluzione") + 1
-        if pw_not_verified:
-            ws.cell(row_idx, sdk_col).fill  = PatternFill("solid", fgColor="FFFFFF")
+        if sdk_appid_invalid:
+            ws.cell(row_idx, sdk_col).fill = PatternFill("solid", fgColor=COL_WARN)
+        elif pw_not_verified and not sdk_loaded:
+            ws.cell(row_idx, sdk_col).fill = PatternFill("solid", fgColor="FFFFFF")
+        else:
+            ws.cell(row_idx, sdk_col).fill = PatternFill("solid", fgColor=COL_OK if sdk_loaded else COL_KO)
+        if pw_not_verified and not ping_sent:
             ws.cell(row_idx, ping_col).fill = PatternFill("solid", fgColor="FFFFFF")
         else:
-            if sdk_appid_invalid:
-                ws.cell(row_idx, sdk_col).fill = PatternFill("solid", fgColor=COL_WARN)
-            else:
-                ws.cell(row_idx, sdk_col).fill = PatternFill("solid", fgColor=COL_OK if sdk_loaded else COL_KO)
             ws.cell(row_idx, ping_col).fill = PatternFill("solid", fgColor=COL_OK if ping_sent else COL_KO)
         if soluzione:
             ws.cell(row_idx, sol_col).fill = PatternFill("solid", fgColor=COL_WARN)

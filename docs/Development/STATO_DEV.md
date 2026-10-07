@@ -19,7 +19,7 @@ se Nielsen funziona correttamente su quelle pagine, e produce un report.
 ```
 Auto Debug NIELSEN/
 ├── main.py                    ← entry point CLI
-├── config.yaml                ← configurazione (paths, mail, timeout Playwright)
+├── config.yaml                ← configurazione (paths, timeout Playwright)
 ├── requirements.txt           ← dipendenze Python
 ├── .gitignore
 │
@@ -30,8 +30,7 @@ Auto Debug NIELSEN/
 │   ├── excel_parser.py        ← parser cartelle + estrazione URL dagli Excel Audicom
 │   ├── tlh_matcher.py         ← wrapper Python che chiama il helper Node.js
 │   ├── playwright_checker.py  ← verifica Nielsen con Playwright (async + concorrenza)
-│   ├── report_builder.py      ← genera il file Excel di output
-│   └── mailer.py              ← invio mail con allegato
+│   └── report_builder.py      ← genera il file Excel di output
 │
 ├── segnalazioni/              ← gitignored (tranne README.md)
 │   └── 06_2026_GEDI-MANZONI/  ← esempio dati reali giugno 2026
@@ -56,9 +55,6 @@ python3 -m playwright install chromium
 # Run completo
 python3 main.py
 
-# Senza invio mail
-python3 main.py --no-mail
-
 # Debug su una singola URL (TLH + Playwright, stampa tutto a console)
 python3 main.py --url "https://www.repubblica.it/economia/test.html"
 
@@ -66,23 +62,22 @@ python3 main.py --url "https://www.repubblica.it/economia/test.html"
 python3 main.py --config altro_config.yaml
 
 # Solo URL di un certo dominio
-python3 main.py --domain "repubblica.it" --no-mail
+python3 main.py --domain "repubblica.it"
 
 # Solo le prime N URL uniche
-python3 main.py --limit 20 --no-mail
+python3 main.py --limit 20
 
 # Solo report siti interni GEDI
-python3 main.py --tipo gedi --no-mail
+python3 main.py --tipo gedi
 
 # Solo report editori terzi Manzoni
-python3 main.py --tipo manzoni --no-mail
+python3 main.py --tipo manzoni
 ```
 
 ### Flag CLI complete
 
 | Flag | Tipo | Descrizione |
 |---|---|---|
-| `--no-mail` | bool | Non invia la mail finale |
 | `--url` | str | Testa una singola URL in modalità debug |
 | `--config` | str | Path del file config (default: `config.yaml`) |
 | `--domain` | str | Filtra le URL che contengono questo dominio |
@@ -97,7 +92,7 @@ I filtri si applicano nell'ordine: `--tipo` → `--domain` → `--limit`.
 
 ### 1. Parsing Excel Audicom (`excel_parser.py`)
 
-Scansiona ricorsivamente la cartella `segnalazioni_path` (configurabile in `config.yaml`).
+Scansiona ricorsivamente la cartella segnalazioni, rilevata automaticamente da `main.py`.
 
 **Struttura cartelle Audicom:**
 ```
@@ -111,12 +106,20 @@ root/
 
 Le cartelle `dinamico` vengono skippate (contengono solo PDF).
 `Apps_Report_GEDI.xlsx` nella root viene skippato: la funzione `read_app_report()`
-è disponibile in `excel_parser.py` ma non viene chiamata automaticamente — da allegare
-manualmente alla mail se necessario.
+è disponibile in `excel_parser.py` ma non viene chiamata automaticamente — da gestire
+manualmente se necessario.
 
 **Nota su semi_statico_mobile:** le URL mobile sono pagine web, non app native.
-Il tracciamento Nielsen è URL-based, quindi vengono analizzate con la stessa logica
-del desktop. Il filtro che le escludeva è stato rimosso.
+Vengono verificate con emulazione dispositivo mobile (iPhone 14: viewport 390×844,
+UA Safari iOS, `is_mobile=True`). Se una URL compare sia come desktop che mobile,
+viene usato il context desktop. Il filtro che le escludeva è stato rimosso.
+
+**Eccezione GEDI — `GEDI_TESTATE_OVERRIDE`:** alcune testate vengono collocate da
+Audicom/Nielsen fuori dalla cartella `GEDI Gruppo Editoriale` pur appartenendo al
+gruppo GEDI. Il set `GEDI_TESTATE_OVERRIDE` in `excel_parser.py` forza `is_gedi=True`
+per questi casi, indipendentemente dalla cartella padre nelle segnalazioni. La testata
+viene inclusa nel report GEDI e riceve il TLH matching come tutti i siti interni.
+Attualmente: `{"Drivek"}`.
 
 **Struttura Excel anomalie:**
 - Riga 1: descrizione errore (es. "Zero page views")
@@ -204,8 +207,10 @@ dall'URL richiesta (redirect) e se lo status HTTP è >= 400. Scritti nella colon
 
 **URL di servizio** (pattern da `skip_url_patterns` in `config.yaml`): non vengono
 escluse da Playwright. Vengono verificate normalmente; se corrispondono a un pattern
-ricevono solo una `service_note` nelle Note del report, senza modificare i risultati
-TLH/SDK/ping.
+ricevono una `service_note` nelle Note del report — la nota segnala che la regexp
+passata a Nielsen per definire il perimetro di rilevazione dovrebbe essere ristretta
+per escludere percorsi di quel tipo, dove il tracciamento non è pertinente.
+I risultati TLH/SDK/ping non vengono alterati.
 
 Impostazioni in `config.yaml`:
 - `playwright_concurrency`: quante pagine aprire in parallelo (default 6)
@@ -227,7 +232,7 @@ Genera uno o due file in `output_path` a seconda del flag `--tipo`.
 #### Sheet GEDI — colonne (in ordine)
 
 ```
-URL | Testata | TLH in pagina | Config TLH trovata | Mapping Nielsen |
+URL | Testata | TLH in pagina | Config TLH trovata | Mapping Nielsen | Bundle Nielsen |
 Soluzione | SDK in pagina | Ping inviato | Note | Tipo accesso | Nielsen Static URL
 ```
 
@@ -242,8 +247,9 @@ Nielsen Static URL è sempre l'ultima colonna.
 1. `TLH in pagina = No` → "Inserire TLH in pagina"
 2. `TLH Sì, Config No` → "Aggiungere config TLH"
 3. `Config Sì, Mapping No` → "Aggiungere mapping Nielsen"
-4. `Mapping Sì, SDK No, appid_invalid` → "AppId Nielsen non definito: aggiungere/correggere regexp nel mapping Nielsen"
-5. `Mapping Sì, SDK No` → "Aggiungere regexp nel mapping Nielsen"
+4. `Mapping Sì, Bundle No` → "Bundle Nielsen non scaricato: probabilmente un errore lato client (CMP o errore JS) ne impedisce il download"
+5. `Bundle Sì, SDK No, appid_invalid` → "AppId Nielsen non definito: aggiungere/correggere regexp nel mapping Nielsen"
+6. `Bundle Sì, SDK No` → "Aggiungere regexp nel mapping Nielsen"
 
 **Logica Soluzione Errore 22** (doppia inizializzazione):
 - `ping_count ≥ 2` → "Doppia inizializzazione Nielsen: N ping rilevati in 30s. Verificare che lo snippet Nielsen non venga eseguito due volte (TLH, template, tag manager)"
@@ -265,14 +271,6 @@ URL | Gruppo | Testata | Tipo accesso | SDK in pagina | Ping inviato | Soluzione
 - `sdk_appid_invalid` → "SDK caricato con appId non definito"
 
 ---
-
-### 5. Mail (`mailer.py`)
-
-Invia il file Excel come allegato. Configurazione SMTP in `config.yaml`.
-La password SMTP si legge dalla variabile d'ambiente `SMTP_PASSWORD` o da `config.yaml`.
-
-Il corpo mail è testo plain con le numeriche aggregate (generato da `mailer.build_testo_mail()`).
-Gli allegati sono filtrati per escludere i `None` (quando `--tipo` genera solo un report).
 
 ---
 
@@ -316,7 +314,7 @@ Gli allegati sono filtrati per escludere i `None` (quando `--tipo` genera solo u
 |---|---|---|
 | Errori Playwright puliti | `playwright_checker.py` | `str(e).split('\n')[0]` — elimina la verbosa sezione "Call log:" dal messaggio d'errore |
 | Riga grigia | `report_builder.py` | Sfondo grigio (`D0D0D0`) per: `http://`, HTTP ≥ 400, errori/timeout Playwright |
-| N/A per errori/timeout | `report_builder.py` | Colonne TLH/SDK/Ping mostrano "N/A" (non "No") quando Playwright non ha potuto verificare la pagina (errore, timeout, http_to_https) |
+| N/A solo se dato assente + errore | `report_builder.py` | "N/A" compare SOLO se il dato non è stato rilevato E il check era incompleto (errore/timeout). Se SDK o ping vengono intercettati prima che scatti un timeout, mostrano "Sì" nel report. Se non rilevati E errore → "N/A". Se non rilevati E nessun errore → "No". |
 | Note errori leggibili | `report_builder.py` | Timeout → "Timeout di navigazione..."; ERR_CONNECTION_RESET → "Errore di connessione: server non raggiungibile" |
 | Soluzione: regexp mapping | `report_builder.py` | Quando TLH Sì + Config Sì + Mapping Sì + SDK No → "Aggiungere regexp nel mapping Nielsen" |
 | Wrap solo colonna Note (GEDI) | `report_builder.py` | Solo la colonna "Note" va a capo; tutte le altre su riga singola. Bordi `thin` grigi su ogni cella. |
@@ -326,10 +324,14 @@ Gli allegati sono filtrati per escludere i `None` (quando `--tipo` genera solo u
 | Errore 22 — finestra 30s | `playwright_checker.py` + `main.py` | `observation_sec=30`; attesa intera finestra; `ping_count` raccoglie tutti i ping; batch separato da Errore 21 |
 | Errore 22 — ping count nel report | `report_builder.py` | Cella "Ping inviato" mostra numero intero; verde=1, giallo=0, rosso≥2; Soluzione descrive il numero di ping |
 | Manzoni: colonna Soluzione | `report_builder.py` | SDK assente / SDK senza ping / appId non definito |
-| Flag --tipo | `main.py` + `report_builder.py` | Genera solo il report richiesto; allegato mail filtrato di conseguenza |
+| Flag --tipo | `main.py` + `report_builder.py` | Genera solo il report richiesto (gedi o manzoni) |
 | Flag --domain | `main.py` | Filtra le segnalazioni per dominio prima del Playwright check |
 | Flag --limit | `main.py` | Tronca le URL uniche alle prime N (utile per test veloci) |
-| semi_statico_mobile incluso | `main.py` | Rimosso il filtro che escludeva le URL mobile; analizzate con la stessa logica desktop |
+| Emulazione mobile iPhone 14 | `playwright_checker.py` + `main.py` | URL dove tutte le segnalazioni sono `semi_statico_mobile` vengono aperte con `p.devices["iPhone 14"]` (viewport 390×844, UA Safari iOS, `is_mobile=True`) e `_STEALTH_MOBILE` (`navigator_platform=iPhone`). Set `mobile_urls` calcolato in `main.py` e passato come parametro a entrambi i batch Playwright. |
+| Auto-detect cartella mensile | `main.py` | `_resolve_segnalazioni_path()` individua automaticamente la sottocartella mensile più recente in `segnalazioni/`; `config.yaml` non va più modificato ogni mese |
+| GEDI_TESTATE_OVERRIDE (Drivek) | `excel_parser.py` | Testate che Audicom classifica fuori dalla cartella GEDI ma appartengono al gruppo: forzate a `is_gedi=True`, finiscono nel report GEDI con TLH matching |
+| Note service URL — regexp Nielsen | `main.py` | La `service_note` per URL di servizio specifica ora che la regexp del perimetro Nielsen dovrebbe essere ristretta per escludere quei percorsi |
+| Colonna Bundle Nielsen (GEDI) | `playwright_checker.py` + `report_builder.py` | Intercetta richieste a `gedistatic.it/corporate/nielsen/` per verificare che il file `nielsen_static_mapping_*.js` venga effettivamente scaricato; se assente con mapping configurato → Soluzione "Bundle Nielsen non scaricato (CMP o errore JS)" |
 | Stealth anti-bot | `playwright_checker.py` | `--disable-blink-features=AutomationControlled`, rimozione `navigator.webdriver`, UA realistico, viewport, locale |
 | Cartelle segnalazioni/output | `.gitignore` + README | `segnalazioni/` e `output/` a root, gitignored; README.md tracciati per istruzioni ai colleghi |
 
@@ -344,15 +346,11 @@ Gli allegati sono filtrati per escludere i `None` (quando `--tipo` genera solo u
 - [ ] **Gestione nuovi codici errore**: la struttura è già pronta (un sheet per errore).
   Per aggiungere logica specifica a un nuovo errore, si crea un handler dedicato in `src/`.
 
-- [ ] **Configurazione mail**: la parte SMTP non è stata testata. Aggiungere
-  `SMTP_PASSWORD` come env var o completare `config.yaml`.
-
 - [ ] **Selenizzazione URL senza www**: alcune URL nelle segnalazioni Audicom sono in
   forma `http://entietribunali.it` (senza www) che il TLH non matcha. Valutare se
   aggiungere una normalizzazione automatica delle URL.
 
-- [ ] **playwright-stealth**: se `ERR_CONNECTION_RESET` persiste su siti specifici,
-  valutare l'adozione del pacchetto `playwright-stealth` per evasione anti-bot più robusta.
+- [x] **playwright-stealth**: installato e integrato (`Stealth` class v2, `apply_stealth_async`). Due istanze: `_STEALTH` (MacIntel) per desktop, `_STEALTH_MOBILE` (iPhone) per mobile.
 
 ---
 

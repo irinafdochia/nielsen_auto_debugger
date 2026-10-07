@@ -102,12 +102,6 @@ La cartella root arriva da Audicom con questa struttura (esempio reale: `06_2026
   - Tipo sito (interno / terzo Manzoni)
   - Codice errore segnalato da Audicom
 
-**Corpo mail (testo):**
-- Numeriche aggregate: quante URL analizzate, quante senza config, quante senza ping, ecc.
-
-**Invio mail:**
-- Lista destinatari configurabile (file di config esterno, non hardcoded)
-
 ---
 
 ## Requisiti tecnici
@@ -115,7 +109,7 @@ La cartella root arriva da Audicom con questa struttura (esempio reale: `06_2026
 - **Nessun over-engineering**: codice leggibile e modificabile senza essere esperti
 - **Predisposto per nuovi codici errore**: struttura a handler per errore separata
 - **Linguaggio**: Python (librerie: openpyxl/pandas per Excel, Playwright per browser)
-- **Config esterna**: destinatari mail e parametri in un file separato (YAML/JSON)
+- **Config esterna**: parametri in un file separato (YAML)
 
 ---
 

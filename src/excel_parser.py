@@ -23,6 +23,11 @@ SKIP_FOLDERS = {"dinamico"}
 # File Excel da ignorare (struttura diversa, non fa parte del flusso)
 SKIP_FILES = {"Apps_Report_GEDI.xlsx"}
 
+# Testate che Audicom/Nielsen classifica fuori dalla cartella "GEDI Gruppo Editoriale"
+# ma che appartengono al gruppo GEDI: finiscono nel report GEDI e ricevono il TLH matching.
+# Il nome deve corrispondere esattamente al nome della cartella testata nelle segnalazioni Audicom.
+GEDI_TESTATE_OVERRIDE = {"Drivek"}
+
 
 def find_segnalazioni(root_path):
     """
@@ -58,7 +63,7 @@ def find_segnalazioni(root_path):
 
             xlsx_path = os.path.join(dirpath, filename)
             gruppo, testata, tipo = _parse_path_parts(parts)
-            is_gedi = (gruppo == GEDI_GRUPPO)
+            is_gedi = (gruppo == GEDI_GRUPPO) or (testata in GEDI_TESTATE_OVERRIDE)
 
             rows = _extract_from_excel(xlsx_path, gruppo, testata, tipo, is_gedi)
             segnalazioni.extend(rows)

@@ -4,7 +4,6 @@ Auto Debug Nielsen - Entry point
 
 Uso:
   python3 main.py                    # usa config.yaml nella stessa cartella
-  python3 main.py --no-mail          # non invia mail alla fine
   python3 main.py --url <url>        # testa una singola URL (debug)
 """
 
@@ -21,7 +20,6 @@ import excel_parser
 import tlh_matcher
 import playwright_checker
 import report_builder
-import mailer
 
 
 def load_config(config_path="config.yaml"):
@@ -29,17 +27,44 @@ def load_config(config_path="config.yaml"):
         return yaml.safe_load(f)
 
 
+def _resolve_segnalazioni_path(base_path):
+    """
+    Accetta sia la root mensile diretta (es. segnalazioni/07_2026_GEDI-MANZONI)
+    sia la cartella padre (es. segnalazioni/): in quel caso individua e restituisce
+    automaticamente la sottocartella mensile più recente.
+    """
+    # Già la root corretta se contiene i marker strutturali della cartella Audicom mensile
+    if (os.path.isdir(os.path.join(base_path, "GEDI Gruppo Editoriale")) or
+            os.path.isfile(os.path.join(base_path, "Apps_Report_GEDI.xlsx"))):
+        return base_path
+    # Altrimenti cerca la sottocartella mensile più recente (esclude file e cartelle nascoste)
+    try:
+        subdirs = [
+            d for d in os.listdir(base_path)
+            if os.path.isdir(os.path.join(base_path, d)) and not d.startswith('.')
+        ]
+    except (FileNotFoundError, PermissionError):
+        return base_path
+    if not subdirs:
+        return base_path
+    subdirs.sort(key=lambda d: os.path.getmtime(os.path.join(base_path, d)), reverse=True)
+    resolved = os.path.join(base_path, subdirs[0])
+    print(f"  Cartella mensile rilevata automaticamente: {subdirs[0]}")
+    return resolved
+
+
 def run(args, config):
-    segnalazioni_path = os.path.join(
+    segnalazioni_path = _resolve_segnalazioni_path(os.path.join(
         os.path.dirname(__file__),
-        config.get('segnalazioni_path', 'untracked')
-    )
+        config.get('segnalazioni_path', 'segnalazioni')
+    ))
     output_path = os.path.join(
         os.path.dirname(__file__),
         config.get('output_path', 'untracked/output')
     )
-    concurrency  = config.get('playwright_concurrency', 3)
-    timeout_sec  = config.get('playwright_timeout', 30)
+    concurrency      = config.get('playwright_concurrency', 3)
+    timeout_sec      = config.get('playwright_timeout', 30)
+    fast_obs_sec     = config.get('playwright_fast_observation_sec', 10)
 
     # ----------------------------------------------------------------
     # 1. Parsing Excel
@@ -97,9 +122,18 @@ def run(args, config):
     def _skip_reason(url):
         for p in skip_patterns:
             if p in url:
-                if p == '/corporate/privacy':
-                    return "URL cookie/privacy policy interna GEDI"
-                return f"URL di servizio ({p.strip('/')}): da verificare se necessaria la misurazione Nielsen"
+                if '/corporate' in url:
+                    return ("URL cookie/privacy policy interna GEDI: Nielsen non verrà implementato su queste pagine", None)
+                note = (
+                    f"URL di servizio (/{p.strip('/')}/): la regexp passata a Nielsen per definire "
+                    f"il perimetro di rilevazione dovrebbe essere ristretta per escludere "
+                    f"percorsi di questo tipo, dove il tracciamento non è pertinente."
+                )
+                solution = (
+                    f"Aggiornare la regexp del perimetro Nielsen per escludere "
+                    f"il percorso /{p.strip('/')}/ dal tracciamento"
+                )
+                return (note, solution)
         return None
 
     url_skip_reasons = {u: _skip_reason(u) for u in all_unique_urls if _skip_reason(u)}
@@ -124,9 +158,18 @@ def run(args, config):
     errore22_urls = [u for u in all_unique_urls if any(s.get('errore') == 'Errore 22' for s in by_url[u])]
     other_urls    = [u for u in all_unique_urls if u not in set(errore22_urls)]
 
+    # URL da testare con emulazione mobile: solo se TUTTE le segnalazioni per quell'URL
+    # sono semi_statico_mobile (evita di usare mobile context su URL presenti anche come desktop)
+    mobile_urls = {
+        u for u in all_unique_urls
+        if all(s.get('tipo') == 'semi_statico_mobile' for s in by_url[u])
+    }
+
     print(f"\n[3/4] Playwright check per {len(all_unique_urls)} URL (concorrenza: {concurrency})...")
     if errore22_urls:
         print(f"       {len(other_urls)} URL normali (5s) + {len(errore22_urls)} URL Errore 22 (finestra 30s)")
+    if mobile_urls:
+        print(f"       {len(mobile_urls)} URL testate con emulazione mobile (iPhone 14)")
 
     async def _run_playwright():
         results = {}
@@ -135,8 +178,9 @@ def run(args, config):
                 other_urls,
                 concurrency=concurrency,
                 timeout_sec=timeout_sec,
-                observation_sec=5,
+                observation_sec=fast_obs_sec,
                 verbose=True,
+                mobile_urls=mobile_urls,
             )
             results.update(r)
         if errore22_urls:
@@ -147,31 +191,26 @@ def run(args, config):
                 timeout_sec=timeout_sec + 30,
                 observation_sec=30,
                 verbose=True,
+                mobile_urls=mobile_urls,
             )
             results.update(r)
         return results
 
     playwright_results = asyncio.run(_run_playwright())
-    # Per le URL di servizio aggiunge solo una nota informativa (senza bloccare il check)
-    for u, reason in url_skip_reasons.items():
+    # Per le URL di servizio aggiunge nota e soluzione (senza bloccare il check)
+    for u, (note, solution) in url_skip_reasons.items():
         if u in playwright_results:
-            playwright_results[u]['service_note'] = reason
+            playwright_results[u]['service_note'] = note
+            if solution:
+                playwright_results[u]['service_solution'] = solution
 
     # ----------------------------------------------------------------
-    # 4. Report + Mail
+    # 4. Report
     # ----------------------------------------------------------------
     print(f"\n[4/4] Generazione report...")
-    gedi_path, manzoni_path = report_builder.build_reports(
+    report_builder.build_reports(
         segnalazioni, tlh_results, playwright_results, output_path, tipo=args.tipo
     )
-
-    if not args.no_mail:
-        testo = mailer.build_testo_mail(segnalazioni, tlh_results, playwright_results)
-        allegati = [p for p in [gedi_path, manzoni_path] if p]
-        print(f"\n[mail] Invio report...")
-        mailer.invia_report(allegati, testo, config)
-    else:
-        print("\n[mail] Skip invio mail (--no-mail)")
 
     print("\nFatto!")
 
@@ -190,21 +229,25 @@ def run_single_url(url, config):
         print(f"  Errore        : {tlh['error']}")
 
     print("\n[Playwright]")
-    timeout_sec = config.get('playwright_timeout', 30)
-    pw = asyncio.run(playwright_checker.check_url(url, timeout_sec=timeout_sec))
+    timeout_sec  = config.get('playwright_timeout', 30)
+    fast_obs_sec = config.get('playwright_fast_observation_sec', 10)
+    pw = asyncio.run(playwright_checker.check_url(url, timeout_sec=timeout_sec, observation_sec=fast_obs_sec, debug=True))
+    print(f"  TLH in pagina : {pw['tlh_loaded']}  {pw.get('tlh_url', '')[:80]}")
+    print(f"  Bundle Nielsen: {pw['nielsen_mapping_loaded']}")
     print(f"  SDK caricato  : {pw['sdk_loaded']}")
     print(f"  Ping inviato  : {pw['ping_sent']}")
     if pw['sdk_url']:
         print(f"  SDK URL       : {pw['sdk_url']}")
     if pw['ping_url']:
         print(f"  Ping URL      : {pw['ping_url']}")
+    if pw.get('final_url'):
+        print(f"  Redirect      : {pw['final_url']}")
     if pw['error']:
         print(f"  Errore        : {pw['error']}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Auto Debug Nielsen")
-    parser.add_argument("--no-mail", action="store_true", help="Non invia la mail finale")
     parser.add_argument("--url",    type=str, help="Testa una singola URL (debug)")
     parser.add_argument("--config", type=str, default="config.yaml", help="Path del file di config")
     parser.add_argument("--domain", type=str, help="Limita l'analisi alle URL che contengono questo dominio (es. repubblica.it)")
