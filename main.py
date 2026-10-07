@@ -4,7 +4,6 @@ Auto Debug Nielsen - Entry point
 
 Uso:
   python3 main.py                    # usa config.yaml nella stessa cartella
-  python3 main.py --no-mail          # non invia mail alla fine
   python3 main.py --url <url>        # testa una singola URL (debug)
 """
 
@@ -21,7 +20,6 @@ import excel_parser
 import tlh_matcher
 import playwright_checker
 import report_builder
-import mailer
 
 
 def load_config(config_path="config.yaml"):
@@ -207,20 +205,12 @@ def run(args, config):
                 playwright_results[u]['service_solution'] = solution
 
     # ----------------------------------------------------------------
-    # 4. Report + Mail
+    # 4. Report
     # ----------------------------------------------------------------
     print(f"\n[4/4] Generazione report...")
-    gedi_path, manzoni_path = report_builder.build_reports(
+    report_builder.build_reports(
         segnalazioni, tlh_results, playwright_results, output_path, tipo=args.tipo
     )
-
-    if not args.no_mail:
-        testo = mailer.build_testo_mail(segnalazioni, tlh_results, playwright_results)
-        allegati = [p for p in [gedi_path, manzoni_path] if p]
-        print(f"\n[mail] Invio report...")
-        mailer.invia_report(allegati, testo, config)
-    else:
-        print("\n[mail] Skip invio mail (--no-mail)")
 
     print("\nFatto!")
 
@@ -258,7 +248,6 @@ def run_single_url(url, config):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Auto Debug Nielsen")
-    parser.add_argument("--no-mail", action="store_true", help="Non invia la mail finale")
     parser.add_argument("--url",    type=str, help="Testa una singola URL (debug)")
     parser.add_argument("--config", type=str, default="config.yaml", help="Path del file di config")
     parser.add_argument("--domain", type=str, help="Limita l'analisi alle URL che contengono questo dominio (es. repubblica.it)")

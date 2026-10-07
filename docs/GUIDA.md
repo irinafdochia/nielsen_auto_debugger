@@ -33,10 +33,6 @@ automatizza completamente.
                             [4] Report Excel
                                    │
                           report_builder.py
-                                   │
-                            [5] Invio mail
-                                   │
-                              mailer.py
 ```
 
 ---
@@ -47,7 +43,7 @@ automatizza completamente.
 Auto Debug NIELSEN/
 │
 ├── main.py                    entry point, gestisce la sequenza e gli argomenti CLI
-├── config.yaml                tutto ciò che si configura (path, mail, timeouts)
+├── config.yaml                tutto ciò che si configura (path, timeouts)
 ├── requirements.txt           dipendenze Python (pip install -r requirements.txt)
 │
 ├── tlh_helper/
@@ -57,8 +53,7 @@ Auto Debug NIELSEN/
 │   ├── excel_parser.py        scansiona le cartelle Audicom, estrae le URL dagli Excel
 │   ├── tlh_matcher.py         chiama il helper Node.js e restituisce i risultati in Python
 │   ├── playwright_checker.py  apre le pagine con Chromium e intercetta le request Nielsen
-│   ├── report_builder.py      genera il file Excel di output con colori e riepilogo
-│   └── mailer.py              invia il report via SMTP con allegato
+│   └── report_builder.py      genera il file Excel di output con colori e riepilogo
 │
 ├── segnalazioni/              gitignored — metti qui la cartella segnalazioni Audicom mensile
 │   └── README.md              istruzioni per i colleghi
@@ -76,11 +71,8 @@ Auto Debug NIELSEN/
 pip3 install -r requirements.txt
 python3 -m playwright install chromium
 
-# Run completo (parsing → TLH → Playwright → report → mail)
+# Run completo (parsing → TLH → Playwright → report)
 python3 main.py
-
-# Run senza inviare la mail
-python3 main.py --no-mail
 
 # Testa una singola URL e stampa tutto a console (modalità debug)
 python3 main.py --url "https://www.repubblica.it/economia/test.html"
@@ -89,26 +81,25 @@ python3 main.py --url "https://www.repubblica.it/economia/test.html"
 python3 main.py --config altro_config.yaml
 
 # Analizza solo le URL di un dominio specifico (utile per test veloci)
-python3 main.py --domain "repubblica.it" --no-mail
+python3 main.py --domain "repubblica.it"
 
 # Analizza solo le prime N URL uniche
-python3 main.py --limit 20 --no-mail
+python3 main.py --limit 20
 
 # Genera solo il report GEDI (siti interni)
-python3 main.py --tipo gedi --no-mail
+python3 main.py --tipo gedi
 
 # Genera solo il report Manzoni (editori terzi)
-python3 main.py --tipo manzoni --no-mail
+python3 main.py --tipo manzoni
 
 # Combinazioni possibili
-python3 main.py --tipo gedi --domain "repubblica.it" --limit 10 --no-mail
+python3 main.py --tipo gedi --domain "repubblica.it" --limit 10
 ```
 
 ### Flag disponibili
 
 | Flag | Valore | Descrizione |
 |---|---|---|
-| `--no-mail` | — | Non invia la mail finale |
 | `--url` | URL | Testa una singola URL in modalità debug (stampa tutto a console) |
 | `--config` | path | Usa un file config diverso da `config.yaml` |
 | `--domain` | stringa | Filtra le segnalazioni alle URL che contengono questo dominio |
@@ -140,9 +131,8 @@ Coordina l'intera esecuzione in quattro step sequenziali.
                             le URL Errore 22 usano una finestra di 30s (metodologia PwC);
                             le altre usano il fast path event-driven (5s)
 
-[4/4] Report + mail       → chiama report_builder.build_reports(..., tipo=args.tipo)
+[4/4] Report              → chiama report_builder.build_reports(..., tipo=args.tipo)
                             se --tipo è specificato, genera solo il report corrispondente
-                            chiama mailer.invia_report() solo con gli allegati generati
 ```
 
 Gestisce anche la modalità `--url` per testare una singola URL in debug.
@@ -170,14 +160,6 @@ skip_url_patterns:          ← URL di servizio: comunque verificate da Playwrig
   - /registr
   - /corporate/privacy      ← nota specifica "URL cookie/privacy policy interna GEDI"
   - /api/
-
-mail:
-  mittente: advwebintegration@gedidigital.it
-  destinatari:
-    - irina.f.dochia@accenture.com
-  smtp_host: smtp.office365.com
-  smtp_port: 587
-  smtp_password: ""          ← metti la password qui o in SMTP_PASSWORD env var
 ```
 
 ---
@@ -203,7 +185,7 @@ root/
 Le cartelle `dinamico` vengono ignorate (contengono PDF, non Excel di anomalie).
 Il file `Apps_Report_GEDI.xlsx` nella root viene ignorato (struttura diversa; la
 funzione `read_app_report()` è disponibile in `excel_parser.py` ma non viene chiamata
-automaticamente — da allegare manualmente alla mail se necessario).
+automaticamente — da gestire manualmente se necessario).
 
 **Eccezione GEDI per testate classificate erroneamente da Audicom:** alcune testate
 sono collocate da Nielsen/Audicom fuori dalla cartella `GEDI Gruppo Editoriale`
@@ -448,21 +430,6 @@ Stessa URL segnalata da più testate → **una sola riga** con le testate concat
 
 ---
 
-### `src/mailer.py` — invio mail
-
-**Input:** path dei file Excel generati + testo corpo + config
-**Output:** mail con allegati
-
-Usa SMTP con STARTTLS (Office 365 di default). La password si legge in questo ordine:
-1. Variabile d'ambiente `SMTP_PASSWORD` (preferita per sicurezza)
-2. Campo `smtp_password` in `config.yaml`
-
-Il corpo della mail contiene un riepilogo testuale delle numeriche.
-
-Se `--tipo` è specificato, solo il report corrispondente viene allegato.
-
----
-
 ## Dati di riferimento (giugno 2026 — primo run reale)
 
 | Metrica | Valore |
@@ -496,6 +463,8 @@ Se `--tipo` è specificato, solo il report corrispondente viene allegato.
 1. Mettere la nuova cartella segnalazioni dentro `segnalazioni/` (es. `07_2026_GEDI-MANZONI`)
 2. Lanciare `python3 main.py`
 
+I report Excel vengono salvati in `output/`.
+
 `config.yaml` non va più modificato: il sistema rileva automaticamente la sottocartella
 mensile più recente (in base alla data di modifica). Se in `segnalazioni/` sono presenti
 più cartelle mensili, viene usata quella modificata per ultima.
@@ -524,6 +493,3 @@ più cartelle mensili, viene usata quella modificata per ultima.
 → Il TLH usa regex che richiedono `www`. Aggiungere normalizzazione in `excel_parser.py`
   se il fenomeno è frequente.
 
-**Mail non inviata:**
-→ Verificare che `SMTP_PASSWORD` sia impostata come variabile d'ambiente, o aggiungere
-  la password direttamente in `config.yaml`.

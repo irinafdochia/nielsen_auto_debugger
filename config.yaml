@@ -32,16 +32,3 @@ skip_url_patterns:
   - /corporate
   - /api/
 
-# ============================================================
-# Mail
-# ============================================================
-mail:
-  mittente: advwebintegration@gedidigital.it
-  destinatari:
-    - irina.f.dochia@accenture.com
-    # - altro@esempio.it
-  oggetto: "Auto Debug Nielsen - Segnalazioni Audicom {mese}"
-  smtp_host: smtp.office365.com
-  smtp_port: 587
-  smtp_user: advwebintegration@gedidigital.it
-  smtp_password: ""   # oppure usa variabile d'ambiente SMTP_PASSWORD

@@ -32,7 +32,7 @@ segnalazioni_path: segnalazioni/06_2026_GEDI-MANZONI   # ← cambia questo
 Poi lancia:
 
 ```bash
-python3 main.py --no-mail
+python3 main.py
 ```
 
 I report generati finiscono in `output/`.

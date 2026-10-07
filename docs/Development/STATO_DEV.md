@@ -19,7 +19,7 @@ se Nielsen funziona correttamente su quelle pagine, e produce un report.
 ```
 Auto Debug NIELSEN/
 ├── main.py                    ← entry point CLI
-├── config.yaml                ← configurazione (paths, mail, timeout Playwright)
+├── config.yaml                ← configurazione (paths, timeout Playwright)
 ├── requirements.txt           ← dipendenze Python
 ├── .gitignore
 │
@@ -30,8 +30,7 @@ Auto Debug NIELSEN/
 │   ├── excel_parser.py        ← parser cartelle + estrazione URL dagli Excel Audicom
 │   ├── tlh_matcher.py         ← wrapper Python che chiama il helper Node.js
 │   ├── playwright_checker.py  ← verifica Nielsen con Playwright (async + concorrenza)
-│   ├── report_builder.py      ← genera il file Excel di output
-│   └── mailer.py              ← invio mail con allegato
+│   └── report_builder.py      ← genera il file Excel di output
 │
 ├── segnalazioni/              ← gitignored (tranne README.md)
 │   └── 06_2026_GEDI-MANZONI/  ← esempio dati reali giugno 2026
@@ -56,9 +55,6 @@ python3 -m playwright install chromium
 # Run completo
 python3 main.py
 
-# Senza invio mail
-python3 main.py --no-mail
-
 # Debug su una singola URL (TLH + Playwright, stampa tutto a console)
 python3 main.py --url "https://www.repubblica.it/economia/test.html"
 
@@ -66,23 +62,22 @@ python3 main.py --url "https://www.repubblica.it/economia/test.html"
 python3 main.py --config altro_config.yaml
 
 # Solo URL di un certo dominio
-python3 main.py --domain "repubblica.it" --no-mail
+python3 main.py --domain "repubblica.it"
 
 # Solo le prime N URL uniche
-python3 main.py --limit 20 --no-mail
+python3 main.py --limit 20
 
 # Solo report siti interni GEDI
-python3 main.py --tipo gedi --no-mail
+python3 main.py --tipo gedi
 
 # Solo report editori terzi Manzoni
-python3 main.py --tipo manzoni --no-mail
+python3 main.py --tipo manzoni
 ```
 
 ### Flag CLI complete
 
 | Flag | Tipo | Descrizione |
 |---|---|---|
-| `--no-mail` | bool | Non invia la mail finale |
 | `--url` | str | Testa una singola URL in modalità debug |
 | `--config` | str | Path del file config (default: `config.yaml`) |
 | `--domain` | str | Filtra le URL che contengono questo dominio |
@@ -111,8 +106,8 @@ root/
 
 Le cartelle `dinamico` vengono skippate (contengono solo PDF).
 `Apps_Report_GEDI.xlsx` nella root viene skippato: la funzione `read_app_report()`
-è disponibile in `excel_parser.py` ma non viene chiamata automaticamente — da allegare
-manualmente alla mail se necessario.
+è disponibile in `excel_parser.py` ma non viene chiamata automaticamente — da gestire
+manualmente se necessario.
 
 **Nota su semi_statico_mobile:** le URL mobile sono pagine web, non app native.
 Vengono verificate con emulazione dispositivo mobile (iPhone 14: viewport 390×844,
@@ -277,14 +272,6 @@ URL | Gruppo | Testata | Tipo accesso | SDK in pagina | Ping inviato | Soluzione
 
 ---
 
-### 5. Mail (`mailer.py`)
-
-Invia il file Excel come allegato. Configurazione SMTP in `config.yaml`.
-La password SMTP si legge dalla variabile d'ambiente `SMTP_PASSWORD` o da `config.yaml`.
-
-Il corpo mail è testo plain con le numeriche aggregate (generato da `mailer.build_testo_mail()`).
-Gli allegati sono filtrati per escludere i `None` (quando `--tipo` genera solo un report).
-
 ---
 
 ## Numeriche su dati reali (giugno 2026)
@@ -337,7 +324,7 @@ Gli allegati sono filtrati per escludere i `None` (quando `--tipo` genera solo u
 | Errore 22 — finestra 30s | `playwright_checker.py` + `main.py` | `observation_sec=30`; attesa intera finestra; `ping_count` raccoglie tutti i ping; batch separato da Errore 21 |
 | Errore 22 — ping count nel report | `report_builder.py` | Cella "Ping inviato" mostra numero intero; verde=1, giallo=0, rosso≥2; Soluzione descrive il numero di ping |
 | Manzoni: colonna Soluzione | `report_builder.py` | SDK assente / SDK senza ping / appId non definito |
-| Flag --tipo | `main.py` + `report_builder.py` | Genera solo il report richiesto; allegato mail filtrato di conseguenza |
+| Flag --tipo | `main.py` + `report_builder.py` | Genera solo il report richiesto (gedi o manzoni) |
 | Flag --domain | `main.py` | Filtra le segnalazioni per dominio prima del Playwright check |
 | Flag --limit | `main.py` | Tronca le URL uniche alle prime N (utile per test veloci) |
 | Emulazione mobile iPhone 14 | `playwright_checker.py` + `main.py` | URL dove tutte le segnalazioni sono `semi_statico_mobile` vengono aperte con `p.devices["iPhone 14"]` (viewport 390×844, UA Safari iOS, `is_mobile=True`) e `_STEALTH_MOBILE` (`navigator_platform=iPhone`). Set `mobile_urls` calcolato in `main.py` e passato come parametro a entrambi i batch Playwright. |
@@ -358,9 +345,6 @@ Gli allegati sono filtrati per escludere i `None` (quando `--tipo` genera solo u
 
 - [ ] **Gestione nuovi codici errore**: la struttura è già pronta (un sheet per errore).
   Per aggiungere logica specifica a un nuovo errore, si crea un handler dedicato in `src/`.
-
-- [ ] **Configurazione mail**: la parte SMTP non è stata testata. Aggiungere
-  `SMTP_PASSWORD` come env var o completare `config.yaml`.
 
 - [ ] **Selenizzazione URL senza www**: alcune URL nelle segnalazioni Audicom sono in
   forma `http://entietribunali.it` (senza www) che il TLH non matcha. Valutare se
